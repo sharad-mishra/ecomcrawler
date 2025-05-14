@@ -1,0 +1,7 @@
+{
+  "outputDir": "./crawled-data",
+  "browserOptions": {
+    "headless": true,
+    "defaultTimeout": 20000
+  }
+}
