@@ -2,14 +2,7 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
 const path = require('path');
-const { 
-  isProductUrl, 
-  isCategoryUrl,
-  normalizeUrl,
-  shouldExcludeUrl,
-  isSameDomain,
-  getStartingPoints
-} = require('../utils/url.utils');
+const { isProductUrl, isCategoryUrl, normalizeUrl, shouldExcludeUrl, isSameDomain, getStartingPoints } = require('../utils/url.utils');
 const config = require('config');
 
 puppeteer.use(StealthPlugin());
@@ -22,36 +15,19 @@ class BaseCrawler {
     this.productLinks = new Set();
     this.queue = [];
     this.failedUrls = new Set();
-    
-    // Set maxPages to Infinity for indefinite crawling, or use user-provided value
     this.maxPages = options.indefiniteCrawling ? Infinity : (options.maxPages || 200);
-    
-    // Get homepage as starting point
-    const formattedDomain = this.domain.includes('://') ? this.domain : `https://www.${this.domain}`;
-    this.startingPoints = getStartingPoints(formattedDomain);
-    
+    this.startingPoints = getStartingPoints(domain.includes('://') ? domain : `https://www.${domain}`);
     this.events = null;
-    this.crawlStats = {
-      startTime: null,
-      endTime: null,
-      totalPages: 0,
-      totalProducts: 0
-    };
+    this.crawlStats = { startTime: null, endTime: null, totalPages: 0, totalProducts: 0 };
     this.stopRequested = false;
   }
 
-  setEventEmitter(io, socketId) {
-    this.events = { io, socketId };
-  }
+  setEventEmitter(io, socketId) { this.events = { io, socketId }; }
 
   async init() {
     this.browser = await puppeteer.launch({
       headless: "new",
-      args: [
-        '--no-sandbox', 
-        '--disable-setuid-sandbox', 
-        '--disable-dev-shm-usage'
-      ]
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
     });
   }
 
@@ -59,7 +35,6 @@ class BaseCrawler {
     console.log(`Closing crawler for ${this.domain}`);
     this.stopRequested = true;
     
-    // If crawling was in progress, make sure we save results
     if (this.crawlStats.startTime && !this.crawlStats.endTime) {
       this.crawlStats.endTime = new Date();
       await this.saveResults();
@@ -67,62 +42,49 @@ class BaseCrawler {
     
     if (this.browser) {
       try {
+        // Close pages and browser
         const pages = await this.browser.pages();
-        
-        // Close all open pages first
-        for (const page of pages) {
-          try {
-            await page.close().catch(() => {});
-          } catch (e) {
-            // Ignore errors when closing individual pages
-          }
-        }
-        
-        // Then close the browser
-        await this.browser.close().catch(err => {
-          console.log(`Error when closing browser: ${err.message}`);
-        });
+        await Promise.all(pages.map(p => p.close().catch(() => {})));
+        await this.browser.close().catch(err => console.log(`Error closing browser: ${err.message}`));
       } catch (error) {
-        console.error(`Error closing browser for ${this.domain}:`, error);
+        console.error(`Error closing browser: ${error.message}`);
       } finally {
         this.browser = null;
+        this.visited.clear();
+        this.queue = [];
+        this.failedUrls.clear();
       }
     }
-    
-    // Clear data structures to free memory
-    this.visited.clear();
-    this.queue = [];
-    this.failedUrls.clear();
   }
 
   async crawl() {
     console.log(`Starting crawl for ${this.domain}`);
-    console.log(`Crawl mode: ${this.maxPages === Infinity ? 'Indefinite (until all products found)' : `Limited to ${this.maxPages} pages`}`);
+    console.log(`Crawl mode: ${this.maxPages === Infinity ? 'Indefinite' : `Limited to ${this.maxPages} pages`}`);
     this.crawlStats.startTime = new Date();
     
-    // Simple queue, just like web-crawler
+    // Initialize crawl state
     this.queue = this.startingPoints;
     this.visited.clear();
     this.productLinks.clear();
     this.failedUrls.clear();
     this.stopRequested = false;
 
-    if (this.events?.io) {
-      this.events.io.to(this.events.socketId).emit('crawl_start', {
-        domain: this.domain,
-        timestamp: new Date().toISOString()
-      });
-    }
+    // Emit start event
+    this.events?.io?.to(this.events.socketId).emit('crawl_start', {
+      domain: this.domain,
+      timestamp: new Date().toISOString()
+    });
 
+    // Crawl tracking variables
     let pagesVisited = 0;
-    let noNewProductsCounter = 0; // Counter for pages with no new products found
-    const MAX_NO_PRODUCT_PAGES = 20; // Stop if we don't find products for this many pages
+    let noNewProductsCounter = 0;
+    const MAX_NO_PRODUCT_PAGES = 20;
     
-    // Single-page browser instance like web-crawler
+    // Setup browser page
     const page = await this.browser.newPage();
     await this.setupPage(page);
     
-    // Adjusted loop condition for infinite crawling
+    // Main crawl loop
     while (this.queue.length > 0 && 
            pagesVisited < this.maxPages && 
            !this.stopRequested && 
@@ -131,89 +93,60 @@ class BaseCrawler {
       const url = this.queue.shift();
       const normalizedUrl = normalizeUrl(url);
       
-      // Skip already visited URLs
       if (this.visited.has(normalizedUrl)) continue;
       
       try {
-        // Mark as visited before processing
         this.visited.add(normalizedUrl);
-        
         console.log(`Visiting [${pagesVisited+1}/${this.maxPages === Infinity ? 'Unlimited' : this.maxPages}]: ${url}`);
         
-        // Navigate to the URL with reasonable timeout
-        await page.goto(url, { 
-          waitUntil: 'networkidle2', 
-          timeout: 30000 
-        });
-        
-        // Get current URL (after possible redirects)
+        await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
         const currentUrl = page.url();
-        
-        // Track product count before processing this page
         const productCountBefore = this.productLinks.size;
         
-        // Check if it's a product page
+        // Process product page
         if (isProductUrl(currentUrl)) {
           this.productLinks.add(normalizeUrl(currentUrl));
           this.crawlStats.totalProducts = this.productLinks.size;
           this.emitProductFound(normalizeUrl(currentUrl));
-          console.log(`Product found: ${currentUrl}`);
         }
         
-        // Handle lazy loading content - like in web-crawler
-        const hasLazyLoading = await page.evaluate(() => {
-          return !!document.querySelector('img[loading="lazy"]') || 
-                 !!document.querySelector('[data-lazy]');
-        });
-        
-        if (hasLazyLoading) {
-          console.log("Lazy loading detected, scrolling to load more content");
-          await this.scrollPage(page);
-        }
-        
-        // Look for "Load More" buttons and click them - like in web-crawler
+        // Handle lazy loading & load more buttons
+        const hasLazyLoading = await page.evaluate(() => 
+          !!document.querySelector('img[loading="lazy"]') || !!document.querySelector('[data-lazy]')
+        );
+        if (hasLazyLoading) await this.scrollPage(page);
         await this.clickLoadMoreButton(page);
         
-        // Extract all links - just like web-crawler
-        const links = await page.evaluate(() => {
-          return Array.from(document.querySelectorAll('a[href]'))
-            .map(a => a.href)
-            .filter(href => href && href.startsWith('http'));
-        });
+        // Extract and process links
+        const links = await page.evaluate(() => 
+          Array.from(document.querySelectorAll('a[href]')).map(a => a.href).filter(href => href && href.startsWith('http'))
+        );
         
-        // Add links to queue - simple approach from web-crawler
         for (const link of links) {
           const normalizedLink = normalizeUrl(link);
           if (!this.visited.has(normalizedLink) && 
-              !this.queue.some(item => item.url === normalizedLink) &&
+              !this.queue.includes(normalizedLink) &&
               isSameDomain(link, this.domain) &&
               !shouldExcludeUrl(link)) {
-            
-            // If it's a product URL, prioritize it by adding to front of queue
-            if (isProductUrl(link)) {
-              this.queue.unshift(link);
+            // Prioritize certain URLs
+            if (isProductUrl(normalizedLink)) {
+              this.productLinks.add(normalizedLink);
+              this.crawlStats.totalProducts = this.productLinks.size;
+              this.emitProductFound(normalizedLink);
+              console.log(`Product found: ${normalizedLink}`);
+            } else if (isCategoryUrl(normalizedLink)) {
+              this.queue.unshift(normalizedLink); // Categories at front
             } else {
-              this.queue.push(link);
+              this.queue.push(normalizedLink);
             }
           }
         }
         
-        // Check if we found new products on this page
-        if (this.productLinks.size > productCountBefore) {
-          noNewProductsCounter = 0; // Reset counter when we find products
-        } else {
-          noNewProductsCounter++;
-          if (this.maxPages === Infinity && noNewProductsCounter >= MAX_NO_PRODUCT_PAGES) {
-            console.log(`No new products found in the last ${MAX_NO_PRODUCT_PAGES} pages, stopping crawl.`);
-          }
-        }
-        
         // Update stats
+        this.productLinks.size > productCountBefore ? (noNewProductsCounter = 0) : noNewProductsCounter++;
         pagesVisited++;
         this.crawlStats.totalPages = pagesVisited;
-        
-        // Update progress
-        this.emitProgress(pagesVisited, this.maxPages);
+        this.emitProgress(pagesVisited);
         
       } catch (error) {
         console.error(`Failed to process ${url}: ${error.message}`);
@@ -221,138 +154,89 @@ class BaseCrawler {
       }
     }
     
-    // Save results
+    // Finalize crawl
     this.crawlStats.endTime = new Date();
     const resultFile = await this.saveResults();
     
-    console.log(`Crawl completed for ${this.domain}`);
-    console.log(`Found ${this.productLinks.size} products from ${pagesVisited} pages`);
-    console.log(`Crawl ${this.stopRequested ? 'was stopped manually' : (pagesVisited >= this.maxPages ? 'reached max pages limit' : 'completed naturally')}`);
+    console.log(`Crawl completed for ${this.domain} - Found ${this.productLinks.size} products from ${pagesVisited} pages`);
     
-    // Emit completion event
-    if (this.events?.io) {
-      this.events.io.to(this.events.socketId).emit('crawl_complete', {
-        domain: this.domain,
-        totalProducts: this.productLinks.size,
-        totalPages: pagesVisited,
-        filePath: resultFile,
-        duration: (this.crawlStats.endTime - this.crawlStats.startTime) / 1000
-      });
-    }
+    // Emit completion
+    this.events?.io?.to(this.events.socketId).emit('crawl_complete', {
+      domain: this.domain,
+      totalProducts: this.productLinks.size,
+      totalPages: pagesVisited,
+      filePath: resultFile,
+      duration: (this.crawlStats.endTime - this.crawlStats.startTime) / 1000
+    });
 
     return resultFile;
   }
 
+  // Helper methods - simplified but functionality preserved
   async setupPage(page) {
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
     await page.setRequestInterception(true);
-    
-    // Block resource types to save memory and speed up crawling
-    page.on('request', req => {
-      const resourceType = req.resourceType();
-      if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
-        req.abort();
-      } else {
-        req.continue();
-      }
-    });
-    
-    // Set reduced timeout
+    page.on('request', req => req.resourceType() === 'image' || req.resourceType() === 'stylesheet' || 
+                             req.resourceType() === 'font' || req.resourceType() === 'media' ? 
+                             req.abort() : req.continue());
     page.setDefaultNavigationTimeout(30000);
   }
 
   async scrollPage(page) {
     try {
-      // Scroll like in web-crawler
-      let previousHeight;
-      let scrollAttempts = 0;
-      const maxScrollAttempts = 10;
-      
-      previousHeight = await page.evaluate('document.body.scrollHeight');
-      
-      while (scrollAttempts++ < maxScrollAttempts) {
-        console.log(`Scroll attempt #${scrollAttempts}, scrolling to bottom...`);
+      let previousHeight = await page.evaluate('document.body.scrollHeight');
+      for (let i = 0; i < 10; i++) {
         await page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
         await page.waitForTimeout(1000);
-        
         const newHeight = await page.evaluate('document.body.scrollHeight');
         if (newHeight === previousHeight) break;
         previousHeight = newHeight;
       }
-    } catch (error) {
-      console.log(`Error during scrolling: ${error.message}`);
-    }
+    } catch (error) { console.log(`Error scrolling: ${error.message}`); }
   }
 
   async clickLoadMoreButton(page) {
-    try {
-      // Common load more button selectors - similar to web-crawler
-      const loadMoreSelectors = [
-        '.load-more', '.more-products', '.view-more', 
-        'button:contains("Load More")', 'button:contains("Show More")',
-        '[class*="loadMore"]', '[class*="LoadMore"]',
-        '.Button-sc-1antbdu-0', '.collection-load-more', '.css-1q7tqyw'
-      ];
-      
-      // Try each selector - like in web-crawler
-      for (const selector of loadMoreSelectors) {
-        try {
-          const buttonExists = await page.$(selector);
-          if (buttonExists) {
-            const isVisible = await buttonExists.isIntersectingViewport();
-            if (!isVisible) {
-              await buttonExists.evaluate(button => 
-                button.scrollIntoView({ behavior: 'smooth', block: 'center' })
-              );
-              await page.waitForTimeout(1000);
-            }
-            
-            console.log(`Clicking ${selector} button`);
-            await buttonExists.click();
-            await page.waitForTimeout(2000);
-            await this.scrollPage(page);
-            break;
+    const selectors = ['.load-more', '.more-products', '.view-more', 'button:contains("Load More")', 
+                     'button:contains("Show More")', '[class*="loadMore"]', '[class*="LoadMore"]'];
+    for (const selector of selectors) {
+      try {
+        const button = await page.$(selector);
+        if (button) {
+          if (!(await button.isIntersectingViewport())) {
+            await button.evaluate(btn => btn.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+            await page.waitForTimeout(1000);
           }
-        } catch (e) {
-          // Ignore errors with specific selectors
+          await button.click();
+          await page.waitForTimeout(2000);
+          await this.scrollPage(page);
+          break;
         }
-      }
-    } catch (error) {
-      console.log(`Error clicking load more: ${error.message}`);
+      } catch {}
     }
   }
 
+  // Event emission methods
   emitProductFound(url) {
-    if (this.events?.io) {
-      this.events.io.to(this.events.socketId).emit('product_found', {
-        url: url,
-        count: this.productLinks.size,
-        domain: this.domain
-      });
-    }
+    this.events?.io?.to(this.events.socketId).emit('product_found', {
+      url, count: this.productLinks.size, domain: this.domain
+    });
   }
 
-  emitProgress(pagesVisited, total) {
-    if (this.events?.io) {
-      this.events.io.to(this.events.socketId).emit('progress_update', {
-        domain: this.domain,
-        crawled: pagesVisited,
-        products: this.productLinks.size,
-        queue: this.queue.length
-      });
-    }
+  emitProgress(pagesVisited) {
+    this.events?.io?.to(this.events.socketId).emit('progress_update', {
+      domain: this.domain,
+      crawled: pagesVisited,
+      products: this.productLinks.size,
+      queue: this.queue.length
+    });
   }
 
   saveResults() {
     const outputDir = path.resolve(process.cwd(), config.get('outputDir') || './crawled-data');
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
-    // Make sure we have an end time
-    if (!this.crawlStats.endTime) {
-      this.crawlStats.endTime = new Date();
-    }
-
-    // Prepare results data
+    this.crawlStats.endTime = this.crawlStats.endTime || new Date();
+    
     const results = {
       domain: this.domain,
       products: Array.from(this.productLinks),
@@ -368,18 +252,13 @@ class BaseCrawler {
       timestamp: new Date().toISOString()
     };
 
-    // Generate a unique filename with timestamp
     const filename = path.join(outputDir, `${this.domain.replace(/\./g, '_')}-${Date.now()}.json`);
     fs.writeFileSync(filename, JSON.stringify(results, null, 2));
-    console.log(`Results saved to ${filename}`);
     
-    // If we have event emitter and the crawl was stopped (not completed naturally)
     if (this.events?.io && this.stopRequested) {
       this.events.io.to(this.events.socketId).emit('crawl_stopped', {
-        domain: this.domain,
-        totalProducts: this.productLinks.size,
-        totalPages: this.crawlStats.totalPages,
-        filePath: filename,
+        domain: this.domain, totalProducts: this.productLinks.size,
+        totalPages: this.crawlStats.totalPages, filePath: filename,
         duration: (this.crawlStats.endTime - this.crawlStats.startTime) / 1000
       });
     }

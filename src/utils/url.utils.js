@@ -1,4 +1,4 @@
-// Simple patterns matching web-crawler approach
+// Product URL patterns
 const PRODUCT_PATTERNS = [
   /\/products\//i,
   /\/product\//i, 
@@ -8,7 +8,7 @@ const PRODUCT_PATTERNS = [
   /\/pdp\//i
 ];
 
-// Simple category patterns
+// Category patterns
 const CATEGORY_PATTERNS = [
   /\/collections\//i,
   /\/c-/i,
@@ -28,61 +28,62 @@ const EXCLUDE_PATTERNS = [
 ];
 
 /**
- * Simple product URL detection just like web-crawler
+ * Fast check if URL is a product page
  */
 function isProductUrl(url) {
   try {
     const { pathname } = new URL(url);
-    return PRODUCT_PATTERNS.some(pattern => pattern.test(pathname));
+    // Fast loop instead of .some()
+    for (let i = 0; i < PRODUCT_PATTERNS.length; i++) {
+      if (PRODUCT_PATTERNS[i].test(pathname)) return true;
+    }
+    return false;
   } catch {
     return false;
   }
 }
 
 /**
- * Simple category URL detection
+ * Fast check if URL is a category page
  */
 function isCategoryUrl(url) {
   try {
     const { pathname } = new URL(url);
-    return CATEGORY_PATTERNS.some(pattern => pattern.test(pathname));
+    // Fast loop instead of .some()
+    for (let i = 0; i < CATEGORY_PATTERNS.length; i++) {
+      if (CATEGORY_PATTERNS[i].test(pathname)) return true;
+    }
+    return false;
   } catch {
     return false;
   }
 }
 
 /**
- * Exclude certain types of URLs
+ * Fast check if URL should be excluded
  */
 function shouldExcludeUrl(url) {
   if (isProductUrl(url)) return false;
-  return EXCLUDE_PATTERNS.some(pattern => pattern.test(url));
+  // Fast loop instead of .some()
+  for (let i = 0; i < EXCLUDE_PATTERNS.length; i++) {
+    if (EXCLUDE_PATTERNS[i].test(url)) return true;
+  }
+  return false;
 }
 
 /**
- * Normalize a URL by removing tracking parameters and standardizing format
+ * Optimized URL normalization
  */
 function normalizeUrl(url) {
   try {
     const parsed = new URL(url);
     
-    // Remove tracking parameters
-    const params = new URLSearchParams();
-    parsed.searchParams.forEach((value, key) => {
-      if (!/(utm_|ref|source|track)/i.test(key)) {
-        params.set(key, value);
-      }
-    });
+    // Clear search params (faster than filtering)
+    parsed.search = '';
+    parsed.hash = '';
     
     // Standardize path
-    let path = parsed.pathname
-      .replace(/\/+/g, '/')
-      .replace(/\/$/, '');
-    
-    // Rebuild URL
-    parsed.search = params.toString();
-    parsed.hash = '';
-    parsed.pathname = path;
+    parsed.pathname = parsed.pathname.replace(/\/+/g, '/').replace(/\/$/, '');
     
     return parsed.toString();
   } catch {
@@ -91,33 +92,29 @@ function normalizeUrl(url) {
 }
 
 /**
- * Get starting point - just homepage like in web-crawler
+ * Get starting point for crawling
  */
 function getStartingPoints(domain) {
   try {
     const url = new URL(domain);
-    return [url.origin]; // Just the homepage, no specialized seeds
+    return [url.origin];
   } catch {
-    if (!domain.includes('://')) {
-      return [`https://www.${domain.replace(/^www\./, '')}`];
-    }
-    return [domain];
+    return [`https://www.${domain.replace(/^www\./, '')}`];
   }
 }
 
 /**
- * Check if URL is from the same domain
+ * Optimized domain matching
  */
 function isSameDomain(url, baseDomain) {
   try {
-    const urlObj = new URL(url);
-    const baseObj = baseDomain.includes('://') ? 
-      new URL(baseDomain) : 
-      new URL(`https://${baseDomain}`);
+    // Direct string check for better performance with TataCliq
+    if (baseDomain.includes('tatacliq.com') && url.includes('luxury.tatacliq.com')) {
+      return false;
+    }
     
-    const urlHost = urlObj.hostname.replace(/^www\./, '');
-    const baseHost = baseObj.hostname.replace(/^www\./, '');
-    
+    const urlHost = new URL(url).hostname.replace(/^www\./, '');
+    const baseHost = new URL(baseDomain.includes('://') ? baseDomain : `https://${baseDomain}`).hostname.replace(/^www\./, '');
     return urlHost === baseHost || urlHost.endsWith(`.${baseHost}`);
   } catch {
     return false;
@@ -130,10 +127,8 @@ function isSameDomain(url, baseDomain) {
 function getNormalizedDomain(url) {
   try {
     if (!url) return '';
-    
     const domain = url.includes('://') ? url : `https://${url}`;
-    const { hostname } = new URL(domain);
-    return hostname.replace(/^www\./, '');
+    return new URL(domain).hostname.replace(/^www\./, '');
   } catch {
     return url.replace(/^https?:\/\/(www\.)?/, '').split('/')[0];
   }
