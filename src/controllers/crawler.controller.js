@@ -72,7 +72,7 @@ exports.getStatus = (req, res) => {
  */
 exports.startCrawl = async (req, res) => {
   try {
-    const { websites } = req.body;
+    const { websites, crawlOptions } = req.body;
     
     if (!websites || !Array.isArray(websites) || websites.length === 0) {
       return res.status(400).json({
@@ -81,6 +81,11 @@ exports.startCrawl = async (req, res) => {
       });
     }
     
+    // Process simplified crawl options from frontend
+    const options = {
+      maxPages: parseInt(crawlOptions?.maxPages) || 500
+    };
+    
     // Get socket ID if available for real-time updates
     const socketId = req.body.socketId || null;
     const io = req.app.locals.io || null;
@@ -88,15 +93,16 @@ exports.startCrawl = async (req, res) => {
     let results;
     if (websites.length === 1) {
       // Single domain crawling
-      results = [await crawlerService.crawlDomain(websites[0], socketId, io)];
+      results = [await crawlerService.crawlDomain(websites[0], options, socketId, io)];
     } else {
       // Multiple domains crawling
-      results = await crawlerService.crawlMultipleDomains(websites, socketId, io);
+      results = await crawlerService.crawlMultipleDomains(websites, options, socketId, io);
     }
     
     return res.json({
       success: true,
       websites,
+      options,
       results
     });
   } catch (error) {

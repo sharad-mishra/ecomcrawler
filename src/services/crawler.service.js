@@ -14,11 +14,12 @@ let isGlobalStopRequested = false;
 /**
  * Crawl a domain
  * @param {string} domain - The domain to crawl
+ * @param {object} options - Crawling options (primarily maxPages)
  * @param {string|null} socketId - Socket ID for real-time updates (optional)
  * @param {object|null} io - Socket.io instance (optional)
  * @returns {Promise<object>} - Crawl results
  */
-async function crawlDomain(domain, socketId = null, io = null) {
+async function crawlDomain(domain, options = {}, socketId = null, io = null) {
   try {
     const normalizedDomain = getNormalizedDomain(domain);
     console.log(`Starting crawl for ${normalizedDomain}`);
@@ -31,8 +32,10 @@ async function crawlDomain(domain, socketId = null, io = null) {
       };
     }
     
-    // Create crawler
-    const crawler = new BaseCrawler(normalizedDomain);
+    // Create crawler with simplified options
+    const crawler = new BaseCrawler(normalizedDomain, {
+      maxPages: options.maxPages || 500
+    });
     
     // Set event emitter if socket info provided
     if (socketId && io) {
@@ -91,11 +94,12 @@ async function crawlDomain(domain, socketId = null, io = null) {
 /**
  * Crawl multiple domains sequentially
  * @param {string[]} domains - Array of domains to crawl
+ * @param {object} options - Crawling options
  * @param {string|null} socketId - Socket ID for real-time updates
  * @param {object|null} io - Socket.io instance
  * @returns {Promise<object[]>} - Array of crawl results
  */
-async function crawlMultipleDomains(domains, socketId = null, io = null) {
+async function crawlMultipleDomains(domains, options = {}, socketId = null, io = null) {
   try {
     console.log(`Starting crawl for ${domains.length} domains`);
     isGlobalStopRequested = false;
@@ -110,7 +114,7 @@ async function crawlMultipleDomains(domains, socketId = null, io = null) {
         break;
       }
       
-      const result = await crawlDomain(domain, socketId, io);
+      const result = await crawlDomain(domain, options, socketId, io);
       results.push(result);
     }
     
