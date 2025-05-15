@@ -23,10 +23,10 @@ class BaseCrawler {
     this.queue = [];
     this.failedUrls = new Set();
     
-    // Only support maxPages from options, handle other parameters internally
-    this.maxPages = options.maxPages || 200;
+    // Set maxPages to Infinity for indefinite crawling, or use user-provided value
+    this.maxPages = options.indefiniteCrawling ? Infinity : (options.maxPages || 200);
     
-    // Get single homepage as starting point - just like web-crawler
+    // Get homepage as starting point
     const formattedDomain = this.domain.includes('://') ? this.domain : `https://www.${this.domain}`;
     this.startingPoints = getStartingPoints(formattedDomain);
     
@@ -97,8 +97,11 @@ class BaseCrawler {
 
   async crawl() {
     console.log(`Starting crawl for ${this.domain}`);
+    console.log(`Crawl mode: ${this.maxPages === Infinity ? 'Indefinite (until all products found)' : `Limited to ${this.maxPages} pages`}`);
     this.crawlStats.startTime = new Date();
-    this.queue = this.startingPoints.map(url => ({ url }));
+    
+    // Simple queue, just like web-crawler
+    this.queue = this.startingPoints;
     this.visited.clear();
     this.productLinks.clear();
     this.failedUrls.clear();
@@ -112,10 +115,20 @@ class BaseCrawler {
     }
 
     let pagesVisited = 0;
+    let noNewProductsCounter = 0; // Counter for pages with no new products found
+    const MAX_NO_PRODUCT_PAGES = 20; // Stop if we don't find products for this many pages
     
-    // Simple BFS approach like web-crawler - no phases
-    while (this.queue.length > 0 && pagesVisited < this.maxPages && !this.stopRequested) {
-      const { url } = this.queue.shift();
+    // Single-page browser instance like web-crawler
+    const page = await this.browser.newPage();
+    await this.setupPage(page);
+    
+    // Adjusted loop condition for infinite crawling
+    while (this.queue.length > 0 && 
+           pagesVisited < this.maxPages && 
+           !this.stopRequested && 
+           (this.maxPages !== Infinity || noNewProductsCounter < MAX_NO_PRODUCT_PAGES)) {
+      
+      const url = this.queue.shift();
       const normalizedUrl = normalizeUrl(url);
       
       // Skip already visited URLs
@@ -125,10 +138,7 @@ class BaseCrawler {
         // Mark as visited before processing
         this.visited.add(normalizedUrl);
         
-        const page = await this.browser.newPage();
-        await this.setupPage(page);
-        
-        console.log(`Visiting [${pagesVisited+1}/${this.maxPages}]: ${url}`);
+        console.log(`Visiting [${pagesVisited+1}/${this.maxPages === Infinity ? 'Unlimited' : this.maxPages}]: ${url}`);
         
         // Navigate to the URL with reasonable timeout
         await page.goto(url, { 
@@ -138,6 +148,9 @@ class BaseCrawler {
         
         // Get current URL (after possible redirects)
         const currentUrl = page.url();
+        
+        // Track product count before processing this page
+        const productCountBefore = this.productLinks.size;
         
         // Check if it's a product page
         if (isProductUrl(currentUrl)) {
@@ -178,15 +191,22 @@ class BaseCrawler {
             
             // If it's a product URL, prioritize it by adding to front of queue
             if (isProductUrl(link)) {
-              this.queue.unshift({ url: link });
+              this.queue.unshift(link);
             } else {
-              this.queue.push({ url: link });
+              this.queue.push(link);
             }
           }
         }
         
-        // Close page to free memory
-        await page.close();
+        // Check if we found new products on this page
+        if (this.productLinks.size > productCountBefore) {
+          noNewProductsCounter = 0; // Reset counter when we find products
+        } else {
+          noNewProductsCounter++;
+          if (this.maxPages === Infinity && noNewProductsCounter >= MAX_NO_PRODUCT_PAGES) {
+            console.log(`No new products found in the last ${MAX_NO_PRODUCT_PAGES} pages, stopping crawl.`);
+          }
+        }
         
         // Update stats
         pagesVisited++;
@@ -207,6 +227,7 @@ class BaseCrawler {
     
     console.log(`Crawl completed for ${this.domain}`);
     console.log(`Found ${this.productLinks.size} products from ${pagesVisited} pages`);
+    console.log(`Crawl ${this.stopRequested ? 'was stopped manually' : (pagesVisited >= this.maxPages ? 'reached max pages limit' : 'completed naturally')}`);
     
     // Emit completion event
     if (this.events?.io) {

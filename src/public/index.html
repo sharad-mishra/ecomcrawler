@@ -34,6 +34,14 @@
       0% { left: -50%; }
       100% { left: 100%; }
     }
+
+    /* Add a class to stop the animation */
+    .indeterminate-progress-bar.stopped::after {
+      animation-play-state: paused;
+      background-color: #dc3545; /* Red color to indicate stopped state */
+      width: 100%;
+      left: 0;
+    }
   </style>
 </head>
 <body>
@@ -80,11 +88,19 @@
             </div>
           </div>
           
-          <!-- Simplified crawl options section - only Max Pages -->
+          <!-- Simplified crawl options section - with indefinite crawling checkbox -->
           <div class="mb-3">
             <label class="form-label">Crawl Options</label>
             <div class="row g-2">
-              <div class="col-md-4">
+              <div class="col-md-6">
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" id="indefiniteCrawling">
+                  <label class="form-check-label" for="indefiniteCrawling">
+                    Crawl indefinitely (until all products found)
+                  </label>
+                </div>
+              </div>
+              <div class="col-md-6">
                 <div class="input-group">
                   <span class="input-group-text">Max Pages</span>
                   <input type="number" class="form-control" id="maxPages" value="500" min="10" max="10000">
@@ -163,9 +179,16 @@
       
       const websites = Array.from(checkboxes).map(cb => cb.value);
       
-      // Simplified crawl options - only maxPages
+      // Get crawl options with indefiniteCrawling support
+      const indefiniteCrawling = document.getElementById('indefiniteCrawling').checked;
+      const maxPages = parseInt(document.getElementById('maxPages').value) || 500;
+      
+      // Update max pages input state based on indefinite crawling selection
+      document.getElementById('maxPages').disabled = indefiniteCrawling;
+      
       const crawlOptions = {
-        maxPages: parseInt(document.getElementById('maxPages').value) || 500
+        maxPages: maxPages,
+        indefiniteCrawling: indefiniteCrawling
       };
       
       // Update UI
@@ -210,6 +233,11 @@
       }
     });
     
+    // Add event listener to toggle max pages input
+    document.getElementById('indefiniteCrawling').addEventListener('change', function() {
+      document.getElementById('maxPages').disabled = this.checked;
+    });
+
     // Add event listener for "Crawl All" button
     document.getElementById('crawlAllButton').addEventListener('click', async () => {
       // Select all checkboxes
@@ -264,6 +292,9 @@
         document.getElementById('startButton').disabled = true;
         document.getElementById('crawlAllButton').disabled = true;
         
+        // Stop the progress bar animation
+        document.querySelector('.indeterminate-progress-bar').classList.add('stopped');
+        
         document.querySelector('.crawler-status').innerHTML = `
           <span class="badge bg-warning">Stopping all crawlers...</span>
         `;
@@ -291,6 +322,7 @@
             document.getElementById('startButton').disabled = false;
             document.getElementById('crawlAllButton').disabled = false;
             document.getElementById('stopButton').style.display = 'none';
+            document.getElementById('progressSection').style.display = 'none';
           }
         }, 3000);
         
@@ -350,6 +382,9 @@
         <span class="badge bg-success">Completed</span>
       `;
       
+      // Hide the progress section when complete
+      document.getElementById('progressSection').style.display = 'none';
+      
       // Enable download if a file path was provided
       if (filePath) {
         document.getElementById('downloadSection').style.display = 'block';
@@ -368,6 +403,14 @@
       document.querySelector('.crawler-status').innerHTML = `
         <span class="badge bg-warning">Stopped</span>
       `;
+      
+      // Stop the progress bar animation and hide the progress section
+      document.querySelector('.indeterminate-progress-bar').classList.add('stopped');
+      
+      // After a short delay, hide the progress section
+      setTimeout(() => {
+        document.getElementById('progressSection').style.display = 'none';
+      }, 1000);
       
       // Enable download if a file path was provided
       if (filePath) {

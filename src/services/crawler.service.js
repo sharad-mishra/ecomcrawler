@@ -32,9 +32,10 @@ async function crawlDomain(domain, options = {}, socketId = null, io = null) {
       };
     }
     
-    // Create crawler with simplified options
+    // Create crawler with updated options
     const crawler = new BaseCrawler(normalizedDomain, {
-      maxPages: options.maxPages || 500
+      maxPages: options.maxPages || 500,
+      indefiniteCrawling: options.indefiniteCrawling || false
     });
     
     // Set event emitter if socket info provided

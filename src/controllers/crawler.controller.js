@@ -81,9 +81,10 @@ exports.startCrawl = async (req, res) => {
       });
     }
     
-    // Process simplified crawl options from frontend
+    // Process crawl options from frontend, supporting indefinite crawling
     const options = {
-      maxPages: parseInt(crawlOptions?.maxPages) || 500
+      maxPages: parseInt(crawlOptions?.maxPages) || 500,
+      indefiniteCrawling: crawlOptions?.indefiniteCrawling === true
     };
     
     // Get socket ID if available for real-time updates
