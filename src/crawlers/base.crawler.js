@@ -57,11 +57,37 @@ class BaseCrawler {
   }
 
   async close() {
+    console.log(`Closing crawler for ${this.domain}`);
     this.stopRequested = true;
     
+    // If crawling was in progress, make sure we save results
+    if (this.crawlStats.startTime && !this.crawlStats.endTime) {
+      this.crawlStats.endTime = new Date();
+      await this.saveResults();
+    }
+    
     if (this.browser) {
-      await this.browser.close();
-      this.browser = null;
+      try {
+        const pages = await this.browser.pages();
+        
+        // Close all open pages first
+        for (const page of pages) {
+          try {
+            await page.close().catch(() => {});
+          } catch (e) {
+            // Ignore errors when closing individual pages
+          }
+        }
+        
+        // Then close the browser
+        await this.browser.close().catch(err => {
+          console.log(`Error when closing browser: ${err.message}`);
+        });
+      } catch (error) {
+        console.error(`Error closing browser for ${this.domain}:`, error);
+      } finally {
+        this.browser = null;
+      }
     }
     
     // Clear data structures to free memory
@@ -77,6 +103,7 @@ class BaseCrawler {
     this.visited.clear();
     this.productLinks.clear();
     this.failedUrls.clear();
+    this.stopRequested = false; // Reset stop flag at start
 
     if (this.events?.io) {
       this.events.io.to(this.events.socketId).emit('crawl_start', {
@@ -88,7 +115,14 @@ class BaseCrawler {
     let pagesVisited = 0;
     let estimatedTotal = Math.min(this.maxPages, this.queue.length * 20);
 
+    // Check stopRequested more frequently
     while (this.queue.length > 0 && pagesVisited < this.maxPages && !this.stopRequested) {
+      // Break immediately if stop requested
+      if (this.stopRequested) {
+        console.log(`Stop requested for ${this.domain}, breaking crawl loop`);
+        break;
+      }
+
       // Get next URL from queue
       const { url, depth } = this.queue.shift();
       const normalizedUrl = normalizeUrl(url);
@@ -97,6 +131,9 @@ class BaseCrawler {
       if (this.visited.has(normalizedUrl) || depth > this.maxDepth) continue;
       
       try {
+        // Check stop requested again before starting page processing
+        if (this.stopRequested) break;
+        
         // Mark as visited before processing
         this.visited.add(normalizedUrl);
         
@@ -105,11 +142,20 @@ class BaseCrawler {
         
         console.log(`Visiting [${pagesVisited+1}/${this.maxPages}]: ${url} (depth: ${depth})`);
         
+        // Set a shorter timeout for navigation when stopping is requested
+        const navigationTimeout = this.stopRequested ? 5000 : 30000;
+        
         // Navigate to the URL
         await page.goto(url, { 
           waitUntil: 'networkidle2', 
-          timeout: 30000 
+          timeout: navigationTimeout 
         });
+        
+        // Early exit if stop requested
+        if (this.stopRequested) {
+          await page.close();
+          break;
+        }
         
         // Simple wait after page load
         await page.waitForTimeout(2000);
@@ -117,17 +163,23 @@ class BaseCrawler {
         // Get current URL (after possible redirects)
         const currentUrl = page.url();
         
-        // Scroll to load lazy content
-        await this.scrollPage(page);
+        // Check stop requested before scrolling
+        if (!this.stopRequested) {
+          // Scroll to load lazy content
+          await this.scrollPage(page);
+        }
         
-        // Try to click load more button
-        await this.clickLoadMoreButton(page);
+        // Check stop requested before clicking load more
+        if (!this.stopRequested) {
+          // Try to click load more button
+          await this.clickLoadMoreButton(page);
+        }
         
         // Check if it's a product page
         let isProduct = isProductUrl(currentUrl);
         
         // If not detected by URL pattern, check using DOM elements
-        if (!isProduct) {
+        if (!isProduct && !this.stopRequested) {
           isProduct = await this.isProductPageByDOM(page);
         }
         
@@ -138,11 +190,10 @@ class BaseCrawler {
           console.log(`Product found: ${currentUrl}`);
         }
         
-        // Extract links from the page
-        const links = await this.extractLinks(page);
-        
-        // Queue new links if not at max depth
-        if (depth < this.maxDepth) {
+        // Extract links from the page if not stopping
+        let links = [];
+        if (!this.stopRequested && depth < this.maxDepth) {
+          links = await this.extractLinks(page);
           this.queueLinks(links, depth + 1);
         }
         
@@ -155,18 +206,36 @@ class BaseCrawler {
         
         // Update progress
         this.emitProgress(pagesVisited, estimatedTotal);
+        
+        // Check for stop after each page
+        if (this.stopRequested) {
+          console.log(`Stop requested after processing page for ${this.domain}`);
+          break;
+        }
+        
       } catch (error) {
         console.error(`Failed to process ${url}: ${error.message}`);
         this.failedUrls.add(url);
+        
+        // If we got an error and stop is requested, break the loop
+        if (this.stopRequested) break;
       }
     }
     
+    // Set end time and record if crawl was completed or stopped
     this.crawlStats.endTime = new Date();
+    this.crawlStats.wasCompleted = !this.stopRequested;
+    
+    console.log(`Crawl ${this.stopRequested ? 'stopped' : 'completed'} for ${this.domain}`);
     
     // Emit completion event
     if (this.events?.io) {
       const resultFile = await this.saveResults();
-      this.events.io.to(this.events.socketId).emit('crawl_complete', {
+      
+      // Use the appropriate event based on whether crawl was stopped or completed
+      const eventName = this.stopRequested ? 'crawl_stopped' : 'crawl_complete';
+      
+      this.events.io.to(this.events.socketId).emit(eventName, {
         domain: this.domain,
         totalProducts: this.productLinks.size,
         totalPages: pagesVisited,
@@ -198,11 +267,21 @@ class BaseCrawler {
 
   async scrollPage(page) {
     try {
-      // Simple page scrolling
-      for (let i = 0; i < 3; i++) {
-        await page.evaluate(`window.scrollTo(0, ${(i + 1) * document.body.scrollHeight / 3})`);
-        await page.waitForTimeout(500);
-      }
+      // Fix for "document is not defined" error
+      await page.evaluate(() => {
+        window.scrollTo(0, document.body.scrollHeight / 3);
+      });
+      await page.waitForTimeout(500);
+      
+      await page.evaluate(() => {
+        window.scrollTo(0, document.body.scrollHeight * 2/3);
+      });
+      await page.waitForTimeout(500);
+      
+      await page.evaluate(() => {
+        window.scrollTo(0, document.body.scrollHeight);
+      });
+      await page.waitForTimeout(500);
     } catch (error) {
       console.log(`Error during scrolling: ${error.message}`);
     }
@@ -319,7 +398,6 @@ class BaseCrawler {
       this.events.io.to(this.events.socketId).emit('progress_update', {
         domain: this.domain,
         crawled: pagesVisited,
-        total: total || this.maxPages,
         products: this.productLinks.size,
         queue: this.queue.length
       });
@@ -330,6 +408,12 @@ class BaseCrawler {
     const outputDir = path.resolve(process.cwd(), config.get('outputDir') || './crawled-data');
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
+    // Make sure we have an end time
+    if (!this.crawlStats.endTime) {
+      this.crawlStats.endTime = new Date();
+    }
+
+    // Prepare results data
     const results = {
       domain: this.domain,
       products: Array.from(this.productLinks),
@@ -339,14 +423,28 @@ class BaseCrawler {
         productsFound: this.crawlStats.totalProducts,
         startTime: this.crawlStats.startTime,
         endTime: this.crawlStats.endTime,
-        durationSeconds: (this.crawlStats.endTime - this.crawlStats.startTime) / 1000
+        durationSeconds: (this.crawlStats.endTime - this.crawlStats.startTime) / 1000,
+        crawlCompleted: !this.stopRequested
       },
       timestamp: new Date().toISOString()
     };
 
+    // Generate a unique filename with timestamp
     const filename = path.join(outputDir, `${this.domain.replace(/\./g, '_')}-${Date.now()}.json`);
     fs.writeFileSync(filename, JSON.stringify(results, null, 2));
     console.log(`Results saved to ${filename}`);
+    
+    // If we have event emitter and the crawl was stopped (not completed naturally)
+    if (this.events?.io && this.stopRequested) {
+      this.events.io.to(this.events.socketId).emit('crawl_stopped', {
+        domain: this.domain,
+        totalProducts: this.productLinks.size,
+        totalPages: this.crawlStats.totalPages,
+        filePath: filename,
+        duration: (this.crawlStats.endTime - this.crawlStats.startTime) / 1000
+      });
+    }
+    
     return filename;
   }
 }

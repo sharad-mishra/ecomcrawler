@@ -6,6 +6,7 @@ const crawlerController = require('../controllers/crawler.controller');
 router.post('/crawl', crawlerController.crawl);
 router.get('/status', crawlerController.getStatus);
 router.post('/start', crawlerController.startCrawl);
+router.post('/start-all', crawlerController.startCrawlAll); // Add new route
 router.get('/results', crawlerController.getResults);
 router.get('/download', crawlerController.downloadResults);
 router.post('/stop', crawlerController.stopCrawlers);

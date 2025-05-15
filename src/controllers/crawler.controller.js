@@ -109,6 +109,49 @@ exports.startCrawl = async (req, res) => {
 };
 
 /**
+ * Start crawling all supported e-commerce sites
+ * @param {*} req - Request object
+ * @param {*} res - Response object
+ */
+exports.startCrawlAll = async (req, res) => {
+  try {
+    // Define all supported websites
+    const allWebsites = [
+      'virgio.com',
+      'westside.com',
+      'tatacliq.com',
+      'nykaafashion.com'
+    ];
+    
+    // Get socket ID if available for real-time updates
+    const socketId = req.body.socketId || null;
+    const io = req.app.locals.io || null;
+    
+    // Start the crawl for all websites
+    const results = await crawlerService.crawlMultipleDomains(allWebsites, socketId, io);
+    
+    // Create an "all sites" summary
+    const allResults = {
+      timestamp: new Date().toISOString(),
+      domains: allWebsites,
+      totalProducts: results.reduce((sum, r) => sum + (r.totalLinks || 0), 0)
+    };
+    
+    return res.json({
+      success: true,
+      message: 'Crawling started for all supported websites',
+      results: allResults
+    });
+  } catch (error) {
+    console.error('Error in startCrawlAll controller:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Error starting crawl for all sites'
+    });
+  }
+};
+
+/**
  * Get crawl results for domains
  * @param {*} req - Request object
  * @param {*} res - Response object
@@ -196,11 +239,47 @@ exports.downloadResults = async (req, res) => {
  */
 exports.stopCrawlers = async (req, res) => {
   try {
+    console.log('Stopping all crawlers...');
+    
+    const io = req.app.locals.io;
+    const socketId = req.body.socketId;
+    
+    // Notify frontend that stopping has started
+    if (io && socketId) {
+      io.to(socketId).emit('stop_initiated', {
+        message: 'Stop request received, stopping all crawlers...'
+      });
+    }
+    
     const result = await crawlerService.stopAllCrawlers();
+    
+    // If there were no active crawlers or no results saved, send a stop_complete event
+    if (result.savedResults?.length === 0 || !result.savedResults) {
+      if (io && socketId) {
+        io.to(socketId).emit('stop_complete', {
+          message: 'All crawlers stopped successfully'
+        });
+      }
+    } else if (io && socketId && result.savedResults) {
+      // For each saved result, emit a crawl_stopped event
+      for (const { domain, resultsFile } of result.savedResults) {
+        io.to(socketId).emit('crawl_stopped', {
+          domain,
+          filePath: resultsFile,
+          message: 'Crawling stopped by user'
+        });
+      }
+      
+      // Also emit a final stop_complete event
+      io.to(socketId).emit('stop_complete', {
+        message: `Stopped ${result.savedResults.length} crawlers`
+      });
+    }
     
     return res.json({
       success: true,
-      message: result.message
+      message: result.message,
+      savedResults: result.savedResults || []
     });
   } catch (error) {
     console.error('Error stopping crawlers:', error);

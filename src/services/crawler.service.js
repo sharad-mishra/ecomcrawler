@@ -8,6 +8,9 @@ const { getNormalizedDomain } = require('../utils/url.utils');
 let crawlers = {};
 let crawlResults = {};
 
+// Add a global stop flag at the top of the file
+let isGlobalStopRequested = false;
+
 /**
  * Crawl a domain
  * @param {string} domain - The domain to crawl
@@ -95,11 +98,18 @@ async function crawlDomain(domain, socketId = null, io = null) {
 async function crawlMultipleDomains(domains, socketId = null, io = null) {
   try {
     console.log(`Starting crawl for ${domains.length} domains`);
+    isGlobalStopRequested = false;
     
     const results = [];
     
     // Process domains sequentially
     for (const domain of domains) {
+      // Check if a global stop was requested
+      if (isGlobalStopRequested) {
+        console.log('Global stop requested, skipping remaining domains');
+        break;
+      }
+      
       const result = await crawlDomain(domain, socketId, io);
       results.push(result);
     }
@@ -143,9 +153,12 @@ function getCrawlerStatus() {
 
 /**
  * Stop all active crawlers
- * @returns {Promise<void>}
+ * @returns {Promise<object>} - Result of the operation
  */
 async function stopAllCrawlers() {
+  // Set global stop flag to prevent new domains from being processed
+  isGlobalStopRequested = true;
+  
   const domains = Object.keys(crawlers);
   
   if (domains.length === 0) {
@@ -153,18 +166,46 @@ async function stopAllCrawlers() {
   }
   
   console.log(`Stopping ${domains.length} active crawlers...`);
+  const savedResults = [];
   
   for (const domain of domains) {
     try {
-      await crawlers[domain].close();
-      delete crawlers[domain];
-      console.log(`Stopped crawler for ${domain}`);
+      // First set the stopRequested flag
+      if (crawlers[domain]) {
+        crawlers[domain].stopRequested = true;
+        console.log(`Set stopRequested flag for ${domain}`);
+      }
+    } catch (error) {
+      console.error(`Error setting stop flag for ${domain}:`, error);
+    }
+  }
+  
+  // Wait a brief moment for any in-progress operations to recognize the stop flag
+  await new Promise(resolve => setTimeout(resolve, 500));
+  
+  // Now close browsers and save results
+  for (const domain of domains) {
+    try {
+      // Save results before closing the browser
+      let resultsFile = null;
+      if (crawlers[domain]) {
+        resultsFile = await crawlers[domain].saveResults();
+        savedResults.push({ domain, resultsFile });
+      
+        // Close browser and clean up
+        await crawlers[domain].close();
+        delete crawlers[domain];
+        console.log(`Stopped crawler for ${domain}`);
+      }
     } catch (error) {
       console.error(`Error stopping crawler for ${domain}:`, error);
     }
   }
   
-  return { message: `Stopped ${domains.length} crawlers` };
+  return { 
+    message: `Stopped ${domains.length} crawlers`,
+    savedResults 
+  };
 }
 
 /**
@@ -180,11 +221,19 @@ async function stopCrawler(domain) {
   }
   
   try {
+    // Save results before stopping
+    const resultsFile = await crawlers[normalizedDomain].saveResults();
+    
+    // Close and clean up
     await crawlers[normalizedDomain].close();
     delete crawlers[normalizedDomain];
     console.log(`Stopped crawler for ${normalizedDomain}`);
     
-    return { status: 'stopped', message: `Stopped crawler for ${normalizedDomain}` };
+    return { 
+      status: 'stopped', 
+      message: `Stopped crawler for ${normalizedDomain}`,
+      resultsFile
+    };
   } catch (error) {
     console.error(`Error stopping crawler for ${normalizedDomain}:`, error);
     throw error;

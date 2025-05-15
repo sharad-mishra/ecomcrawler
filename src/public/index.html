@@ -11,6 +11,29 @@
     .progress-bar { transition: width 0.5s ease; }
     .site-card { transition: all 0.3s ease; }
     .site-card:hover { transform: translateY(-5px); box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
+    
+    /* Add animated loading bar styles */
+    .indeterminate-progress-bar {
+      background-color: #f3f3f3;
+      height: 10px;
+      overflow: hidden;
+      position: relative;
+    }
+    
+    .indeterminate-progress-bar::after {
+      content: '';
+      position: absolute;
+      height: 100%;
+      width: 50%;
+      background-color: #0d6efd;
+      animation: loading-bar 2s infinite ease-in-out;
+      left: -50%;
+    }
+    
+    @keyframes loading-bar {
+      0% { left: -50%; }
+      100% { left: 100%; }
+    }
   </style>
 </head>
 <body>
@@ -57,23 +80,29 @@
             </div>
           </div>
           
-          <button type="submit" class="btn btn-primary" id="startButton">
-            Start Crawling
-          </button>
-          <button type="button" class="btn btn-danger" id="stopButton" style="display: none;">
-            Stop Crawling
-          </button>
+          <!-- Add buttons for individual crawling and crawl all -->
+          <div class="mb-3">
+            <button type="submit" class="btn btn-primary" id="startButton">
+              Start Crawling Selected
+            </button>
+            <button type="button" class="btn btn-success" id="crawlAllButton">
+              Crawl All Sites
+            </button>
+            <button type="button" class="btn btn-danger" id="stopButton" style="display: none;">
+              Stop Crawling
+            </button>
+          </div>
         </form>
         
         <!-- Progress Section -->
         <div class="mt-4" id="progressSection" style="display: none;">
-          <div class="d-flex justify-content-between mb-2">
-            <span id="progressStatus">Crawling...</span>
-            <span id="progressPercentage">0%</span>
+          <div class="mb-2">
+            <span id="progressStatus">Crawling in progress...</span>
           </div>
-          <div class="progress">
-            <div class="progress-bar" role="progressbar" style="width: 0%"></div>
-          </div>
+          
+          <!-- Replace progress bar with indeterminate loading bar -->
+          <div class="indeterminate-progress-bar"></div>
+          
           <div class="mt-2 row">
             <div class="col">
               <small class="text-muted">Pages crawled: <span id="pagesCount">0</span></small>
@@ -162,24 +191,98 @@
       }
     });
     
+    // Add event listener for "Crawl All" button
+    document.getElementById('crawlAllButton').addEventListener('click', async () => {
+      // Select all checkboxes
+      document.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        cb.checked = true;
+      });
+      
+      // Update UI
+      document.getElementById('startButton').disabled = true;
+      document.getElementById('crawlAllButton').disabled = true;
+      document.querySelector('.crawler-status').innerHTML = `
+        <span class="badge bg-warning">Starting crawl for all sites...</span>
+      `;
+      document.getElementById('progressSection').style.display = 'block';
+      document.getElementById('stopButton').style.display = 'inline-block';
+      
+      // Clear previous results
+      document.getElementById('productList').innerHTML = '';
+      document.getElementById('productList').style.display = 'none';
+      document.getElementById('resultsPlaceholder').style.display = 'block';
+      document.getElementById('downloadSection').style.display = 'none';
+      
+      try {
+        // Start crawling all sites
+        const response = await fetch('/api/crawler/start-all', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ socketId: socket.id })
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Server responded with status: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        console.log('Crawl all started:', data);
+      } catch (error) {
+        console.error('Error starting crawl all:', error);
+        document.querySelector('.crawler-status').innerHTML = `
+          <span class="badge bg-danger">Error: ${error.message}</span>
+        `;
+        document.getElementById('startButton').disabled = false;
+        document.getElementById('crawlAllButton').disabled = false;
+        document.getElementById('stopButton').style.display = 'none';
+      }
+    });
+
     // Stop button handler
     document.getElementById('stopButton').addEventListener('click', async () => {
       try {
+        document.getElementById('stopButton').disabled = true;
+        document.getElementById('startButton').disabled = true;
+        document.getElementById('crawlAllButton').disabled = true;
+        
+        document.querySelector('.crawler-status').innerHTML = `
+          <span class="badge bg-warning">Stopping all crawlers...</span>
+        `;
+        document.getElementById('progressStatus').textContent = 'Stopping crawlers, please wait...';
+        
         const response = await fetch('/api/crawler/stop', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ socketId: socket.id })
         });
+        
+        if (!response.ok) {
+          throw new Error(`Failed to stop crawlers: ${response.status}`);
+        }
         
         const data = await response.json();
         console.log('Crawling stopped:', data);
         
-        document.querySelector('.crawler-status').innerHTML = `
-          <span class="badge bg-secondary">Stopped</span>
-        `;
-        document.getElementById('startButton').disabled = false;
-        document.getElementById('stopButton').style.display = 'none';
+        // After 3 seconds, reset the UI if we haven't received crawl_stopped events
+        setTimeout(() => {
+          if (document.querySelector('.crawler-status').innerHTML.includes('Stopping')) {
+            document.querySelector('.crawler-status').innerHTML = `
+              <span class="badge bg-secondary">Stopped</span>
+            `;
+            document.getElementById('startButton').disabled = false;
+            document.getElementById('crawlAllButton').disabled = false;
+            document.getElementById('stopButton').style.display = 'none';
+          }
+        }, 3000);
+        
       } catch (error) {
         console.error('Error stopping crawl:', error);
+        document.querySelector('.crawler-status').innerHTML = `
+          <span class="badge bg-danger">Error stopping: ${error.message}</span>
+        `;
+        document.getElementById('stopButton').disabled = false;
+        document.getElementById('startButton').disabled = false;
+        document.getElementById('crawlAllButton').disabled = false;
       }
     });
 
@@ -206,29 +309,58 @@
       document.getElementById('productsCount').textContent = count;
     });
 
-    socket.on('progress_update', ({ domain, crawled, total, products }) => {
-      const percentage = Math.min(100, Math.round((crawled / total) * 100));
-      document.getElementById('progressPercentage').textContent = `${percentage}%`;
-      document.querySelector('.progress-bar').style.width = `${percentage}%`;
+    socket.on('progress_update', ({ domain, crawled, products, queue }) => {
       document.getElementById('pagesCount').textContent = crawled;
       document.getElementById('productsCount').textContent = products;
-      document.getElementById('progressStatus').textContent = `Crawling ${domain} (${crawled}/${total} pages)`;
+      document.getElementById('progressStatus').textContent = `Crawling ${domain} (${crawled} pages, ${products} products)`;
+      
+      // Update the crawler status in the header too
+      document.querySelector('.crawler-status').innerHTML = `
+        <span class="badge bg-warning">Crawling ${domain} - ${products} products found</span>
+      `;
     });
 
     socket.on('crawl_complete', ({ domain, filePath, totalProducts }) => {
+      // If there are active crawlers, don't reset UI yet
+      if (document.querySelector('.crawler-status').innerHTML.includes('Crawling')) {
+        console.log(`Crawl completed for ${domain}, but other crawls are still running`);
+        return;
+      }
+      
       document.querySelector('.crawler-status').innerHTML = `
         <span class="badge bg-success">Completed</span>
       `;
       
-      // Enable download
-      document.getElementById('downloadSection').style.display = 'block';
-      document.getElementById('downloadButton').href = `/api/crawler/download?file=${encodeURIComponent(path.basename(filePath))}`;
+      // Enable download if a file path was provided
+      if (filePath) {
+        document.getElementById('downloadSection').style.display = 'block';
+        document.getElementById('downloadButton').href = `/api/crawler/download?file=${encodeURIComponent(path.basename(filePath))}`;
+        resultsFile = filePath;
+      }
       
-      // Re-enable start button
+      // Re-enable buttons
       document.getElementById('startButton').disabled = false;
+      document.getElementById('crawlAllButton').disabled = false;
       document.getElementById('stopButton').style.display = 'none';
+    });
+
+    // Add socket event handler for crawl_stopped
+    socket.on('crawl_stopped', ({ domain, filePath, totalProducts }) => {
+      document.querySelector('.crawler-status').innerHTML = `
+        <span class="badge bg-warning">Stopped</span>
+      `;
       
-      resultsFile = filePath;
+      // Enable download if a file path was provided
+      if (filePath) {
+        document.getElementById('downloadSection').style.display = 'block';
+        document.getElementById('downloadButton').href = `/api/crawler/download?file=${encodeURIComponent(path.basename(filePath))}`;
+        resultsFile = filePath;
+      }
+      
+      // Re-enable buttons
+      document.getElementById('startButton').disabled = false;
+      document.getElementById('crawlAllButton').disabled = false;
+      document.getElementById('stopButton').style.display = 'none';
     });
     
     // Helper function for paths
