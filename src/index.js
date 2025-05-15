@@ -1,37 +1,53 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
+const Fastify = require('fastify');
 const path = require('path');
 const config = require('config');
-const crawlerRoutes = require('./routes/crawler.routes');
 const fs = require('fs');
+const fastifyStatic = require('@fastify/static');
+const fastifySensible = require('@fastify/sensible');
+const fastifySocketIO = require('fastify-socket.io');
 
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server);
-
-// Middleware
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
-
-// Make io available to routes
-app.locals.io = io;
-
-// Routes
-app.use('/api/crawler', crawlerRoutes);
-
-// Serve the main HTML file
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+// Create Fastify instance with modified logger config
+const fastify = Fastify({
+  logger: {
+    level: 'info',
+    transport: {
+      target: 'pino-pretty',
+      options: {
+        translateTime: 'HH:MM:ss Z',
+        ignore: 'pid,hostname'
+      }
+    }
+  }
 });
 
-// WebSocket
-io.on('connection', (socket) => {
-  console.log('Client connected:', socket.id);
-  
-  socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
+// Register plugins
+fastify.register(fastifyStatic, {
+  root: path.join(__dirname, 'public'),
+  prefix: '/'
+});
+
+fastify.register(fastifySensible);
+
+// Register Socket.io
+fastify.register(fastifySocketIO);
+
+// Setup socket.io events
+fastify.ready(() => {
+  fastify.io.on('connection', (socket) => {
+    fastify.log.info(`Client connected: ${socket.id}`);
+    
+    socket.on('disconnect', () => {
+      fastify.log.info(`Client disconnected: ${socket.id}`);
+    });
   });
+});
+
+// Register API routes
+fastify.register(require('./plugins/crawler-routes'));
+
+// Root route serves the main HTML file
+fastify.get('/', (req, reply) => {
+  reply.sendFile('index.html');
 });
 
 // Create output directory if it doesn't exist
@@ -42,7 +58,11 @@ if (!fs.existsSync(outputDir)) {
 
 // Start server
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+fastify.listen({ port: PORT, host: 'localhost' }, (err) => {
+  if (err) {
+    fastify.log.error(err);
+    process.exit(1);
+  }
   console.log(`Server running on port ${PORT}`);
   console.log(`Open http://localhost:${PORT} in your browser`);
 });
