@@ -1,0 +1,54 @@
+{
+  "outputDir": "./crawled-data",
+  "browserOptions": {
+    "headless": true,
+    "defaultTimeout": 60000
+  },
+  "maxScrollAttempts": 20,
+  "domainsConfig": [
+    {
+      "domainName": "https://www.tatacliq.com/",
+      "loadButtonClassName": ".ShowMoreButtonPlp__button",
+      "loadButtonInnerText": "Show More Products",
+      "navigationTimeout": 120000,
+      "waitUntil": "networkidle0",
+      "excludePaths": [
+        "/my-account/",
+        "/gift-cards",
+        "/corporate-gift-card"
+      ],
+      "categoryUrls": [
+        "https://www.tatacliq.com/women's-clothing/c-msh10/",
+        "https://www.tatacliq.com/mens-clothing/c-msh11/",
+        "https://www.tatacliq.com/women-bags/c-msh1600",
+        "https://www.tatacliq.com/footwear/c-msh13/",
+        "https://www.tatacliq.com/kids/c-msh21/",
+        "https://www.tatacliq.com/jewellery/c-msh20/",
+        "https://www.tatacliq.com/beauty-&-grooming/c-msh25/",
+        "https://www.tatacliq.com/home/c-msh22/",
+        "https://www.tatacliq.com/electronics/c-msh12",
+        "https://www.tatacliq.com/search/page-1?q=watches"
+      ],
+      "sampleProductUrls": [
+        "https://www.tatacliq.com/lov-by-westside-brown-high-rise-trousers/p-mp000000026071280",
+        "https://www.tatacliq.com/kapoor-lamp-shades-transparent-white-glass-mystic-cotton-shade-table-lamp/p-mp000000020053259",
+        "https://www.tatacliq.com/guess-analog-rose-gold-dial-womens-watch-gw0302l3/p-mp000000019270291"
+      ]
+    },
+    {
+      "domainName": "https://www.virgio.com/",
+      "excludePaths": []
+    },
+    {
+      "domainName": "https://www.nykaafashion.com/",
+      "excludePaths": []
+    },
+    {
+      "domainName": "https://www.westside.com/",
+      "excludePaths": []
+    }
+  ],
+  "concurrencyLimit": 4,
+  "productFileName": "product-links.json",
+  "failedUrlsFileName": "failed-urls.json"
+}

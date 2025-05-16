@@ -4,7 +4,8 @@ const PRODUCT_PATTERNS = [
   /\/product\//i, 
   /\/p\//i, 
   /\/item\//i,
-  /\/p-mp/i,
+  /\/p-mp/i,  // TataCliq product pattern
+  /\/[^\/]+\/p-mp/i,  // Another TataCliq product pattern
   /\/pdp\//i
 ];
 
@@ -32,6 +33,11 @@ const EXCLUDE_PATTERNS = [
  */
 function isProductUrl(url) {
   try {
+    // Special case for TataCliq
+    if (url.includes('tatacliq.com') && (url.includes('/p-mp') || url.match(/\/[^\/]+\/p-mp/))) {
+      return true;
+    }
+    
     const { pathname } = new URL(url);
     // Fast loop instead of .some()
     for (let i = 0; i < PRODUCT_PATTERNS.length; i++) {
@@ -96,10 +102,29 @@ function normalizeUrl(url) {
  */
 function getStartingPoints(domain) {
   try {
+    // Check if domain already has protocol
+    if (!domain.startsWith('http://') && !domain.startsWith('https://')) {
+      // Add protocol if missing
+      domain = 'https://' + domain;
+    }
+    
+    // Parse URL to standardize it
     const url = new URL(domain);
-    return [url.origin];
-  } catch {
-    return [`https://www.${domain.replace(/^www\./, '')}`];
+    
+    // Check if www is missing and should be added
+    if (!url.hostname.startsWith('www.') && 
+        !url.hostname.startsWith('luxury.') && 
+        !url.hostname.startsWith('shop.')) {
+      return [`https://www.${url.hostname}${url.pathname}`];
+    }
+    
+    return [url.toString()];
+  } catch (error) {
+    // Fallback for malformed URLs
+    if (!domain.startsWith('http')) {
+      domain = 'https://www.' + domain.replace(/^www\./, '');
+    }
+    return [domain];
   }
 }
 
@@ -134,7 +159,8 @@ function getNormalizedDomain(url) {
   }
 }
 
-module.exports = {
+// Change from CommonJS to ES Module exports
+export {
   isProductUrl,
   isCategoryUrl,
   shouldExcludeUrl,

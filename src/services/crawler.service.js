@@ -1,256 +1,423 @@
-const BaseCrawler = require('../crawlers/base.crawler');
 const fs = require('fs');
 const path = require('path');
 const config = require('config');
-const { getNormalizedDomain } = require('../utils/url.utils');
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const { isProductUrl, normalizeUrl, isSameDomain } = require('../utils/url.utils');
 
-// Active crawlers and results
-let crawlers = {};
-let crawlResults = {};
+// Use stealth plugin to avoid detection
+puppeteer.use(StealthPlugin());
 
-// Add a global stop flag at the top of the file
-let isGlobalStopRequested = false;
+// Track active crawlers
+const activeCrawlers = new Map();
 
 /**
- * Crawl a domain
- * @param {string} domain - The domain to crawl
- * @param {object} options - Crawling options (primarily maxPages)
- * @param {string|null} socketId - Socket ID for real-time updates (optional)
- * @param {object|null} io - Socket.io instance (optional)
- * @returns {Promise<object>} - Crawl results
+ * Crawl a specific domain for product URLs
  */
 async function crawlDomain(domain, options = {}, socketId = null, io = null) {
-  try {
-    const normalizedDomain = getNormalizedDomain(domain);
-    console.log(`Starting crawl for ${normalizedDomain}`);
-    
-    if (crawlers[normalizedDomain]) {
-      console.log(`Crawler already running for ${normalizedDomain}`);
-      return { 
-        status: 'already_running', 
-        message: `Crawler already running for ${normalizedDomain}` 
-      };
-    }
-    
-    // Create crawler with updated options
-    const crawler = new BaseCrawler(normalizedDomain, {
-      maxPages: options.maxPages || 500,
-      indefiniteCrawling: options.indefiniteCrawling || false
-    });
-    
-    // Set event emitter if socket info provided
-    if (socketId && io) {
-      crawler.setEventEmitter(io, socketId);
-    }
-    
-    // Initialize browser
-    await crawler.init();
-    
-    // Track active crawlers
-    crawlers[normalizedDomain] = crawler;
-    
-    // Start crawling
-    const resultsFile = await crawler.crawl();
-    
-    // Store results
-    if (resultsFile) {
-      try {
-        const resultData = JSON.parse(fs.readFileSync(resultsFile, 'utf8'));
-        crawlResults[normalizedDomain] = resultData;
-      } catch (err) {
-        console.error(`Error reading results file: ${err.message}`);
-      }
-    }
-    
-    // Clean up after crawl
-    delete crawlers[normalizedDomain];
-    await crawler.close();
-    
-    console.log(`Completed crawl for ${normalizedDomain}, found ${crawlResults[normalizedDomain]?.totalLinks || 0} product links`);
-    
-    return {
-      domain: normalizedDomain,
-      links: crawlResults[normalizedDomain]?.products || [], 
-      totalLinks: crawlResults[normalizedDomain]?.totalLinks || 0,
-      crawlId: Date.now().toString(),
-      resultsFile
-    };
-  } catch (error) {
-    console.error(`Error crawling ${domain}:`, error);
-    
-    // Clean up in case of error
-    if (crawlers[domain]) {
-      try {
-        await crawlers[domain].close();
-      } catch (closeError) {
-        console.error(`Error closing crawler for ${domain}:`, closeError);
-      }
-      delete crawlers[domain];
-    }
-    
-    throw error;
-  }
-}
+  const timestamp = Date.now();
+  const domainConfig = getDomainConfig(domain);
+  
+  // Get settings from config with overrides from options
+  const settings = {
+    maxPages: options.maxPages || 500,
+    indefiniteCrawling: options.indefiniteCrawling || false,
+    navigationTimeout: domainConfig.navigationTimeout || 30000,
+    waitUntil: domainConfig.waitUntil || 'domcontentloaded',
+    ...options
+  };
 
-/**
- * Crawl multiple domains sequentially
- * @param {string[]} domains - Array of domains to crawl
- * @param {object} options - Crawling options
- * @param {string|null} socketId - Socket ID for real-time updates
- * @param {object|null} io - Socket.io instance
- * @returns {Promise<object[]>} - Array of crawl results
- */
-async function crawlMultipleDomains(domains, options = {}, socketId = null, io = null) {
+  // Initialize crawler statistics
+  const crawlStats = {
+    totalPages: 0,
+    productsFound: 0,
+    startTime: new Date(),
+    endTime: null,
+    durationSeconds: 0,
+    crawlCompleted: false
+  };
+
+  // Set up browser
+  const browser = await puppeteer.launch({
+    headless: "new", 
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--disable-gpu',
+      '--window-size=1920,1080'
+    ]
+  });
+  
+  const page = await browser.newPage();
+  
+  // Configure page
+  await page.setViewport({ width: 1280, height: 800 });
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+  
+  // Set up crawler state
+  const visited = new Set();
+  const queue = [];
+  const productLinks = new Set();
+  const failedUrls = new Set();
+  
+  // Create crawler object
+  const crawler = {
+    browser,
+    page,
+    domain,
+    queue,
+    productLinks,
+    failedUrls,
+    crawlStats,
+    settings,
+    active: true,
+    cancelRequested: false
+  };
+  
+  // Store crawler in active crawlers map
+  activeCrawlers.set(domain, crawler);
+  
+  // Determine starting points - use category URLs for TataCliq
+  if (domainConfig.categoryUrls && domainConfig.categoryUrls.length > 0) {
+    // Use category URLs as starting points for TataCliq
+    domainConfig.categoryUrls.forEach(url => queue.push(url));
+    console.log(`Starting with ${domainConfig.categoryUrls.length} category URLs for ${domain}`);
+  } else {
+    // Default to domain root
+    queue.push(domain);
+  }
+  
+  // Emit initial crawler info if Socket.IO is available
+  if (io && socketId) {
+    io.to(socketId).emit('crawl_start', { 
+      domain, 
+      status: 'started',
+      queueSize: queue.length
+    });
+  }
+  
   try {
-    console.log(`Starting crawl for ${domains.length} domains`);
-    isGlobalStopRequested = false;
-    
-    const results = [];
-    
-    // Process domains sequentially
-    for (const domain of domains) {
-      // Check if a global stop was requested
-      if (isGlobalStopRequested) {
-        console.log('Global stop requested, skipping remaining domains');
+    // Main crawling loop
+    while (queue.length > 0 && crawler.active && !crawler.cancelRequested) {
+      // Check if we've reached the page limit
+      if (!settings.indefiniteCrawling && crawlStats.totalPages >= settings.maxPages) {
+        console.log(`[${domain}] Reached max pages limit (${settings.maxPages})`);
         break;
       }
       
-      const result = await crawlDomain(domain, options, socketId, io);
-      results.push(result);
+      const url = queue.shift();
+      
+      // Skip if already visited
+      if (visited.has(normalizeUrl(url))) {
+        continue;
+      }
+      
+      // Mark as visited
+      visited.add(normalizeUrl(url));
+      crawlStats.totalPages++;
+      
+      // Log progress
+      console.log(`[${crawlStats.totalPages}/${settings.maxPages}] Visiting: ${url}`);
+      
+      // Update UI if Socket.IO is available
+      if (io && socketId) {
+        io.to(socketId).emit('progress_update', {
+          domain,
+          url,
+          pagesVisited: crawlStats.totalPages,
+          productsFound: productLinks.size,
+          queueSize: queue.length
+        });
+      }
+      
+      try {
+        // Navigate to the page with proper timeout
+        await page.goto(url, { 
+          waitUntil: settings.waitUntil || 'networkidle2',
+          timeout: settings.navigationTimeout || 60000
+        });
+        
+        // First extract links from the current page before clicking "Show More"
+        const initialLinks = await extractLinks(page, domain);
+        
+        // Process initial links before clicking "Show More"
+        const newProductsFromInitialScan = processLinks(initialLinks, domain, visited, queue, productLinks);
+        if (newProductsFromInitialScan.length > 0) {
+          console.log(`Found ${newProductsFromInitialScan.length} product links on initial scan`);
+          
+          // Update UI with new products if Socket.IO is available
+          if (io && socketId) {
+            for (const productUrl of newProductsFromInitialScan) {
+              io.to(socketId).emit('product_found', {
+                domain,
+                url: productUrl,
+                count: productLinks.size
+              });
+            }
+          }
+        }
+        
+        // For TataCliq, handle "Show More Products" button
+        if (domain.includes('tatacliq.com') && domainConfig.loadButtonClassName) {
+          let buttonClicked = false;
+          let clickAttempts = 0;
+          const maxClickAttempts = 10;
+          
+          // Try to click "Show More Products" button multiple times
+          while (clickAttempts < maxClickAttempts) {
+            try {
+              // Check if button exists and is visible
+              const buttonVisible = await page.evaluate((selector, buttonText) => {
+                const buttons = Array.from(document.querySelectorAll(selector));
+                const button = buttons.find(b => b.innerText.includes(buttonText));
+                
+                if (button && button.offsetParent !== null) {
+                  // Scroll button into view
+                  button.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  return true;
+                }
+                return false;
+              }, domainConfig.loadButtonClassName, "Show More Products");
+              
+              if (!buttonVisible) break;
+              
+              // Click the button
+              console.log(`Clicking "Show More Products" button (attempt ${clickAttempts + 1})`);
+              await page.click(domainConfig.loadButtonClassName);
+              buttonClicked = true;
+              clickAttempts++;
+              
+              // Wait for new content to load
+              await page.waitForTimeout(2000);
+              
+              // Extract and process new links after each click
+              if (buttonClicked) {
+                const newLinks = await extractLinks(page, domain);
+                const newProducts = processLinks(newLinks, domain, visited, queue, productLinks);
+                
+                if (newProducts.length > 0) {
+                  console.log(`Found ${newProducts.length} new products after clicking "Show More"`);
+                  
+                  // Update UI with new products
+                  if (io && socketId) {
+                    for (const productUrl of newProducts) {
+                      io.to(socketId).emit('product_found', {
+                        domain,
+                        url: productUrl,
+                        count: productLinks.size
+                      });
+                    }
+                  }
+                }
+              }
+            } catch (err) {
+              console.log(`Error clicking button: ${err.message}`);
+              break;
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`Error crawling ${url}: ${err.message}`);
+        failedUrls.add(url);
+      }
     }
     
-    console.log(`Completed crawling ${results.length} domains`);
-    return results;
-  } catch (error) {
-    console.error('Error in crawlMultipleDomains:', error);
-    throw error;
+    // Save results
+    crawlStats.endTime = new Date();
+    crawlStats.durationSeconds = (crawlStats.endTime - crawlStats.startTime) / 1000;
+    crawlStats.crawlCompleted = !crawler.cancelRequested;
+    crawlStats.productsFound = productLinks.size;
+    
+    const result = {
+      domain,
+      products: Array.from(productLinks),
+      totalLinks: productLinks.size,
+      stats: crawlStats,
+      timestamp: new Date().toISOString()
+    };
+    
+    // Save to file with proper directory handling
+    const outputDir = path.resolve(process.cwd(), config.get('outputDir'));
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+    
+    const sanitizedDomain = domain.replace(/https?:\/\//g, '').replace(/\W+/g, '_');
+    const outputPath = path.join(outputDir, `${sanitizedDomain}-${timestamp}.json`);
+    fs.writeFileSync(outputPath, JSON.stringify(result, null, 2));
+    
+    // Emit completion event if Socket.IO is available
+    if (io && socketId) {
+      io.to(socketId).emit('crawl_complete', {
+        domain,
+        productCount: productLinks.size,
+        filePath: outputPath
+      });
+    }
+    
+    console.log(`Crawling complete for ${domain}. Found ${productLinks.size} products.`);
+    return result;
+  } catch (err) {
+    console.error(`Crawler error for ${domain}:`, err);
+    throw err;
+  } finally {
+    // Clean up
+    crawler.active = false;
+    activeCrawlers.delete(domain);
+    
+    try {
+      await browser.close();
+    } catch (err) {
+      console.error('Error closing browser:', err);
+    }
   }
 }
 
 /**
- * Get completed crawl results
- * @param {string|null} domain - Optional domain to filter results
- * @returns {object} - Crawl results
+ * Helper function to extract links from a page
  */
-function getCrawlResults(domain = null) {
-  if (domain) {
-    const normalizedDomain = getNormalizedDomain(domain);
-    return crawlResults[normalizedDomain] || null;
+async function extractLinks(page, domain) {
+  // Extract all links on the page using a selector that's specific to TataCliq product cards
+  const links = await page.evaluate(() => {
+    // Get general links from the page
+    const allLinks = Array.from(document.querySelectorAll('a[href]'))
+      .map(a => a.href)
+      .filter(href => href && href.startsWith('http'));
+    
+    // Get TataCliq product links (which might be in product cards)
+    const productCards = Array.from(document.querySelectorAll('.ProductModule__base a, .product-list a, .product-grid a, a[href*="/p-mp"]'));
+    const productLinks = productCards.map(a => a.href).filter(href => href && href.startsWith('http'));
+    
+    // Combine and return unique links
+    return [...new Set([...allLinks, ...productLinks])];
+  });
+  
+  console.log(`Found ${links.length} links on ${await page.url()}`);
+  return links;
+}
+
+/**
+ * Helper function to process links
+ * Returns array of new product links
+ */
+function processLinks(links, domain, visited, queue, productLinks) {
+  const newProductLinks = [];
+  
+  for (const link of links) {
+    // Skip if not on the same domain
+    if (!isSameDomain(link, domain)) {
+      continue;
+    }
+    
+    const normalizedLink = normalizeUrl(link);
+    
+    // Check if it's a product URL
+    const isTataCliqProduct = domain.includes('tatacliq.com') && 
+      (normalizedLink.includes('/p-mp') || normalizedLink.match(/\/[^\/]+\/p-mp/));
+    
+    if (isProductUrl(normalizedLink) || isTataCliqProduct) {
+      if (!productLinks.has(normalizedLink)) {
+        productLinks.add(normalizedLink);
+        newProductLinks.push(normalizedLink);
+        console.log(`Found product link: ${normalizedLink}`);
+      }
+    } 
+    // Add to queue if not visited and not a product
+    else if (!visited.has(normalizedLink)) {
+      queue.push(normalizedLink);
+    }
   }
   
-  return crawlResults;
+  return newProductLinks;
 }
 
 /**
- * Get status of active crawlers
- * @returns {object} - Status object with active crawlers
+ * Get configuration for a specific domain
  */
-function getCrawlerStatus() {
-  return {
-    activeCrawlers: Object.keys(crawlers),
-    count: Object.keys(crawlers).length,
-    activeSince: Object.entries(crawlers).reduce((acc, [domain, crawler]) => {
-      acc[domain] = crawler.crawlStats.startTime;
-      return acc;
-    }, {})
-  };
+function getDomainConfig(domain) {
+  const normalizedDomain = domain.replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0];
+  const domainsConfig = config.get('domainsConfig');
+  
+  const domainConfig = domainsConfig.find(conf => {
+    const configDomain = conf.domainName.replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0];
+    return configDomain.includes(normalizedDomain) || normalizedDomain.includes(configDomain);
+  });
+  
+  return domainConfig || {};
+}
+
+/**
+ * Stop a crawler for a specific domain
+ */
+async function stopCrawler(domain) {
+  const crawler = activeCrawlers.get(domain);
+  
+  if (!crawler) {
+    return { message: `No active crawler for ${domain}` };
+  }
+  
+  crawler.cancelRequested = true;
+  crawler.active = false;
+  
+  try {
+    await crawler.browser.close();
+  } catch (err) {
+    console.error(`Error closing browser for ${domain}:`, err);
+  }
+  
+  activeCrawlers.delete(domain);
+  
+  return { message: `Stopped crawler for ${domain}` };
 }
 
 /**
  * Stop all active crawlers
- * @returns {Promise<object>} - Result of the operation
  */
 async function stopAllCrawlers() {
-  // Set global stop flag to prevent new domains from being processed
-  isGlobalStopRequested = true;
-  
-  const domains = Object.keys(crawlers);
-  
-  if (domains.length === 0) {
-    return { message: 'No active crawlers to stop' };
-  }
-  
-  console.log(`Stopping ${domains.length} active crawlers...`);
-  const savedResults = [];
+  const domains = Array.from(activeCrawlers.keys());
   
   for (const domain of domains) {
-    try {
-      // First set the stopRequested flag
-      if (crawlers[domain]) {
-        crawlers[domain].stopRequested = true;
-        console.log(`Set stopRequested flag for ${domain}`);
-      }
-    } catch (error) {
-      console.error(`Error setting stop flag for ${domain}:`, error);
-    }
+    await stopCrawler(domain);
   }
   
-  // Wait a brief moment for any in-progress operations to recognize the stop flag
-  await new Promise(resolve => setTimeout(resolve, 500));
-  
-  // Now close browsers and save results
-  for (const domain of domains) {
-    try {
-      // Save results before closing the browser
-      let resultsFile = null;
-      if (crawlers[domain]) {
-        resultsFile = await crawlers[domain].saveResults();
-        savedResults.push({ domain, resultsFile });
-      
-        // Close browser and clean up
-        await crawlers[domain].close();
-        delete crawlers[domain];
-        console.log(`Stopped crawler for ${domain}`);
-      }
-    } catch (error) {
-      console.error(`Error stopping crawler for ${domain}:`, error);
-    }
-  }
-  
-  return { 
-    message: `Stopped ${domains.length} crawlers`,
-    savedResults 
-  };
+  return { message: `Stopped all crawlers (${domains.length})` };
 }
 
 /**
- * Stop a specific crawler
- * @param {string} domain - Domain to stop crawling
- * @returns {Promise<object>} - Result of the operation
+ * Get active crawler instance
  */
-async function stopCrawler(domain) {
-  const normalizedDomain = getNormalizedDomain(domain);
+function getActiveCrawler(domain) {
+  return activeCrawlers.get(domain);
+}
+
+/**
+ * Get crawl results (for API)
+ */
+function getCrawlResults(domain) {
+  const crawler = activeCrawlers.get(domain);
   
-  if (!crawlers[normalizedDomain]) {
-    return { status: 'not_running', message: `No active crawler for ${normalizedDomain}` };
+  if (!crawler) {
+    return null;
   }
   
-  try {
-    // Save results before stopping
-    const resultsFile = await crawlers[normalizedDomain].saveResults();
-    
-    // Close and clean up
-    await crawlers[normalizedDomain].close();
-    delete crawlers[normalizedDomain];
-    console.log(`Stopped crawler for ${normalizedDomain}`);
-    
-    return { 
-      status: 'stopped', 
-      message: `Stopped crawler for ${normalizedDomain}`,
-      resultsFile
-    };
-  } catch (error) {
-    console.error(`Error stopping crawler for ${normalizedDomain}:`, error);
-    throw error;
-  }
+  return {
+    domain,
+    products: Array.from(crawler.productLinks),
+    stats: {
+      crawling: crawler.active,
+      pagesVisited: crawler.crawlStats.totalPages,
+      productsFound: crawler.productLinks.size,
+      queueSize: crawler.queue.length
+    }
+  };
 }
 
 module.exports = {
   crawlDomain,
-  crawlMultipleDomains,
-  getCrawlResults,
-  getCrawlerStatus,
-  stopAllCrawlers,
   stopCrawler,
-  crawlers
+  stopAllCrawlers,
+  getActiveCrawler,
+  getCrawlResults
 };
