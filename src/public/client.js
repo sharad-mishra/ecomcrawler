@@ -246,6 +246,10 @@ document.addEventListener('DOMContentLoaded', function() {
   socket.on('crawlComplete', (results) => {
     addLogEntry('Crawling completed!', 'success');
     statusText.textContent = 'Crawling completed!';
+    
+    // Set progress to 100% on completion
+    progressBar.style.width = '100%';
+    
     updateUIForCrawling(false);
     
     // Enable download button
@@ -301,23 +305,42 @@ document.addEventListener('DOMContentLoaded', function() {
     downloadButton.disabled = false;
   });
   
-  // Helper functions
-  function resetUI() {
-    activeCrawls = {};
-    productUrls = new Set();
-    resultFilePath = null;
+  /**
+   * Update progress stats and progress bar
+   */
+  function updateProgressStats() {
+    // Calculate total stats across all domains
+    const totalStats = Object.values(activeCrawls).reduce((acc, curr) => {
+      acc.pagesVisited += curr.pagesVisited || 0;
+      acc.productsFound += curr.productsFound || 0;
+      return acc;
+    }, { pagesVisited: 0, productsFound: 0 });
     
-    statusLog.innerHTML = '';
-    productList.innerHTML = '';
-    noResults.style.display = 'block';
-    productCounter.textContent = '(0)';
-    progressBar.style.width = '0%';
-    progressBar.classList.remove('progress-indeterminate');
-    statusText.textContent = 'Ready to crawl';
-    progressStats.textContent = '';
-    downloadButton.disabled = true; // Disable download button initially
+    // Update the progress stats text
+    progressStats.textContent = `${totalStats.pagesVisited} pages visited, ${totalStats.productsFound} products found`;
+    
+    // Calculate progress percentage if we have a maximum pages value
+    if (!indefiniteCrawl.checked) {
+      const maxPagesValue = parseInt(maxPages.value) || 500;
+      const domains = Object.keys(activeCrawls).length || 1;
+      const totalMaxPages = maxPagesValue * domains;
+      
+      // Calculate percentage (cap at 99% until complete)
+      let percentage = Math.min(99, Math.round((totalStats.pagesVisited / totalMaxPages) * 100));
+      
+      // Only update if we're not in indeterminate mode
+      if (!progressBar.parentElement.classList.contains('progress-indeterminate')) {
+        progressBar.style.width = `${percentage}%`;
+      }
+    }
+    
+    // Update product counter
+    productCounter.textContent = `(${totalStats.productsFound})`;
   }
   
+  /**
+   * Enhanced version of updateUIForCrawling to manage progress bar
+   */
   function updateUIForCrawling(isCrawling) {
     startButton.disabled = isCrawling;
     stopButton.disabled = !isCrawling;
@@ -329,14 +352,59 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     customDomain.disabled = isCrawling || !customCheck.checked;
     
+    // Status container animation
+    const statusContainer = document.querySelector('.status-container');
+    
     if (isCrawling) {
-      progressBar.classList.add('progress-indeterminate');
+      // Add animation class to status container
+      statusContainer.classList.add('crawling-active');
+      
+      // For indefinite crawl, use indeterminate animation
+      if (indefiniteCrawl.checked) {
+        progressBar.parentElement.classList.add('progress-indeterminate');
+      } else {
+        // For definite crawl, start at 0%
+        progressBar.parentElement.classList.remove('progress-indeterminate');
+        progressBar.style.width = '0%';
+      }
+      
       statusText.textContent = 'Crawling in progress...';
     } else {
-      progressBar.classList.remove('progress-indeterminate');
+      // Remove animations when finished
+      statusContainer.classList.remove('crawling-active');
+      progressBar.parentElement.classList.remove('progress-indeterminate');
+      
+      // If completed successfully, set to 100%
+      if (statusText.textContent.includes('completed') || 
+          statusText.textContent.includes('Finished')) {
+        progressBar.style.width = '100%';
+      }
     }
   }
   
+  // Enhanced resetUI function
+  function resetUI() {
+    activeCrawls = {};
+    productUrls = new Set();
+    resultFilePath = null;
+    
+    statusLog.innerHTML = '';
+    productList.innerHTML = '';
+    noResults.style.display = 'block';
+    productCounter.textContent = '(0)';
+    
+    // Reset progress bar
+    const statusContainer = document.querySelector('.status-container');
+    statusContainer.classList.remove('crawling-active');
+    progressBar.parentElement.classList.remove('progress-indeterminate');
+    progressBar.style.width = '0%';
+    
+    statusText.textContent = 'Ready to crawl';
+    progressStats.textContent = '';
+    downloadButton.disabled = true;
+  }
+  
+  // Helper functions
   function addLogEntry(message, type = 'info') {
     const entry = document.createElement('div');
     entry.className = `log-entry log-${type}`;
@@ -376,27 +444,5 @@ document.addEventListener('DOMContentLoaded', function() {
   // Update the product counter display
   function updateProductCounter() {
     productCounter.textContent = `(${productUrls.size})`;
-  }
-  
-  function updateProgressStats() {
-    let totalPages = 0;
-    let totalProducts = 0;
-    
-    Object.values(activeCrawls).forEach(crawl => {
-      totalPages += crawl.pagesVisited || 0;
-      totalProducts += crawl.productsFound || 0;
-    });
-    
-    progressStats.textContent = `${totalPages} pages crawled, ${totalProducts} products found`;
-    
-    // Update progress bar - if we're using max pages
-    if (!indefiniteCrawl.checked) {
-      const maxPagesValue = parseInt(maxPages.value) || 500;
-      const totalSites = Object.keys(activeCrawls).length || 1;
-      const maxPagesTotal = maxPagesValue * totalSites;
-      
-      const progressPercentage = Math.min(Math.round((totalPages / maxPagesTotal) * 100), 100);
-      progressBar.style.width = `${progressPercentage}%`;
-    }
   }
 });

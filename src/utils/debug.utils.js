@@ -125,3 +125,48 @@ export function validateProductUrl(url, verbose = false) {
     return false;
   }
 }
+
+/**
+ * Simple utility for consistent logging across the application
+ */
+
+/**
+ * Log crawling activity
+ * @param {string} domain - Domain being crawled
+ * @param {string} message - Log message
+ * @param {string} level - Log level (info, warn, error)
+ */
+export function logCrawlingActivity(domain, message, level = 'info') {
+  const timestamp = new Date().toLocaleTimeString();
+  const domainText = domain ? `[${domain}]` : '';
+  
+  switch(level) {
+    case 'warn':
+      console.warn(`${timestamp} ${domainText} ${message}`);
+      break;
+    case 'error':
+      console.error(`${timestamp} ${domainText} ${message}`);
+      break;
+    case 'info':
+    default:
+      console.log(`${timestamp} ${domainText} ${message}`);
+  }
+}
+
+/**
+ * Log crawler statistics
+ * @param {Object} stats - Crawler statistics to log
+ */
+export function logCrawlerStats(stats) {
+  console.log('--- Crawler Statistics ---');
+  console.log(`Pages visited: ${stats.totalPages || 0}`);
+  console.log(`Products found: ${stats.productsFound || 0}`);
+  console.log(`Queue size: ${stats.queueSize || 0}`);
+  console.log(`Duration: ${stats.durationSeconds || 0}s`);
+  console.log('------------------------');
+}
+
+export default {
+  logCrawlingActivity,
+  logCrawlerStats
+};

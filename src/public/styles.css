@@ -197,6 +197,33 @@ h3 {
   transition: width 0.5s ease;
 }
 
+/* Add indeterminate progress animation */
+.progress-indeterminate .indicator-bar {
+  width: 50%;
+  position: relative;
+  animation: indeterminate-progress 1.5s infinite ease-in-out;
+  background: linear-gradient(90deg, 
+    rgba(var(--primary-color-rgb), 0.6), 
+    rgba(var(--primary-color-rgb), 1), 
+    rgba(var(--primary-color-rgb), 0.6));
+}
+
+@keyframes indeterminate-progress {
+  0% { left: -50%; }
+  100% { left: 100%; }
+}
+
+/* Add pulse animation for active crawling */
+.crawling-active .status-container {
+  animation: status-pulse 3s infinite;
+}
+
+@keyframes status-pulse {
+  0% { border-color: var(--border-color); }
+  50% { border-color: var(--primary-color); }
+  100% { border-color: var(--border-color); }
+}
+
 .progress-text {
   display: flex;
   justify-content: space-between;

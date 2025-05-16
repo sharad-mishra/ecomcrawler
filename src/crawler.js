@@ -26,8 +26,6 @@ if (!fs.existsSync(outputDir)) {
  * Start the crawling process
  */
 export async function startCrawling({ domains, onUpdate, onComplete, onError, onProductFound }) {
-  // Add onProductFound to parameters
-  
   // Add a global cancellation flag
   global.crawlCancelled = false;
   
@@ -330,12 +328,10 @@ async function crawlSite(domainInfo, onUpdate, onProductFound) {
           
           // Site-specific handling AFTER the page is loaded
           if (currentDomain.includes('virgio.com')) {
-            console.log(`Using special handling for Virgio page: ${page.url()}`);
             try {
               // Handle Virgio differently - perform more aggressive link extraction
               await scrollPage(page, domainName, onUpdate);
               links = await handleVirgioLinks(page);
-              console.log(`Found ${links.length} Virgio-specific links`);
               usedSiteSpecificHandler = true;
             } catch (err) {
               console.error(`Error in Virgio handler: ${err.message}`);
@@ -343,12 +339,10 @@ async function crawlSite(domainInfo, onUpdate, onProductFound) {
               usedSiteSpecificHandler = false; 
             }
           } else if (currentDomain.includes('westside.com')) {
-            console.log(`Using special handling for Westside page: ${page.url()}`);
             try {
               // Handle Westside differently - they use Shopify platform
               await scrollPage(page, domainName, onUpdate);
               links = await handleWestsideLinks(page);
-              console.log(`Found ${links.length} Westside-specific links`);
               usedSiteSpecificHandler = true;
             } catch (err) {
               console.error(`Error in Westside handler: ${err.message}`);
@@ -360,7 +354,6 @@ async function crawlSite(domainInfo, onUpdate, onProductFound) {
               // Special handling for Nykaa Fashion
               await scrollPage(page, domainName, onUpdate);
               links = await extractNykaaFashionLinks(page);
-              console.log(`Found ${links.length} NykaaFashion-specific links`);
               usedSiteSpecificHandler = true;
             } catch (err) {
               console.error(`Error in NykaaFashion handler: ${err.message}`);
@@ -629,122 +622,6 @@ async function validateProductUrl(page, url, domain) {
 }
 
 /**
- * Extract product links from a grid layout with site-specific enhancements
- */
-async function extractProductLinksFromGrid(page) {
-  const url = await page.url();
-  const domain = new URL(url).hostname;
-  
-  // Site-specific selectors based on domain
-  const additionalSelectors = [];
-  
-  if (domain.includes('westside.com')) {
-    additionalSelectors.push(
-      // Westside specific selectors
-      '.grid__item',
-      '.grid-product__content',
-      '.product-card',
-      '.product-item',
-      'a[href*="/products/"]'
-    );
-    
-    console.log(`Using Westside-specific selectors for ${url}`);
-  } else if (domain.includes('virgio.com')) {
-    additionalSelectors.push(
-      // Virgio specific selectors
-      '.product-item', 
-      '.product-card',
-      '.item-container',
-      'a[href*="/products/"]'
-    );
-    
-    console.log(`Using Virgio-specific selectors for ${url}`);
-  }
-  
-  // Add debug logging to see what's happening
-  const productLinks = await page.evaluate((additionalSelectors) => {
-    const links = new Set();
-    const debugInfo = { 
-      selectors: {},
-      totalFound: 0,
-      directProductLinks: 0,
-      cardLinks: 0
-    };
-    
-    // Log found elements for each selector
-    const checkSelector = (selector) => {
-      try {
-        const elements = document.querySelectorAll(selector);
-        debugInfo.selectors[selector] = elements.length;
-        return elements;
-      } catch (e) {
-        debugInfo.selectors[selector] = `Error: ${e.message}`;
-        return [];
-      }
-    };
-    
-    // 1. Direct product link check - most reliable
-    [
-      'a[href*="/products/"]',
-      'a[href*="/product/"]',
-      'a[href*="/p/"]',
-      'a[href*="/p-mp"]',
-      'a[href$="/buy"]'
-    ].forEach(selector => {
-      const elements = checkSelector(selector);
-      elements.forEach(el => {
-        if (el.href && el.href.includes('http')) {
-          links.add(el.href);
-          debugInfo.directProductLinks++;
-        }
-      });
-    });
-    
-    // 2. Check product cards with site-specific selectors
-    const allSelectors = [
-      '.product-card', 
-      '.product-item', 
-      '.product-tile', 
-      '.grid-view-item',
-      '[class*="product-card"]',
-      '[class*="productCard"]', 
-      ...additionalSelectors
-    ];
-    
-    allSelectors.forEach(selector => {
-      const cards = checkSelector(selector);
-      cards.forEach(card => {
-        const anchors = card.querySelectorAll('a[href]');
-        anchors.forEach(a => {
-          if (a.href && a.href.includes('http')) {
-            links.add(a.href);
-            debugInfo.cardLinks++;
-          }
-        });
-      });
-    });
-    
-    debugInfo.totalFound = links.size;
-    
-    // Log debug info in browser console
-    console.table(debugInfo.selectors);
-    console.log(`Total links found: ${debugInfo.totalFound}`);
-    
-    return {
-      links: Array.from(links),
-      debug: debugInfo
-    };
-  }, additionalSelectors);
-  
-  // Log debug information to node console
-  console.log(`[Debug] Found ${productLinks.debug.totalFound} potential product links:`);
-  console.log(`  - Direct product links: ${productLinks.debug.directProductLinks}`);
-  console.log(`  - Card-based links: ${productLinks.debug.cardLinks}`);
-  
-  return productLinks.links;
-}
-
-/**
  * Helper function to scroll a page
  */
 async function scrollPage(page, domain, onUpdate) {
@@ -791,6 +668,27 @@ async function scrollPage(page, domain, onUpdate) {
 }
 
 /**
+ * Validate NykaaFashion product URLs
+ */
+function validateNykaaFashionProductUrl(url) {
+  try {
+    // Must be a Nykaa Fashion URL
+    if (!url.includes('nykaafashion.com')) return false;
+    
+    // Must match the specific pattern for Nykaa products
+    // Pattern is usually: /some-product-description/p/12345678
+    if (url.match(/\/p\/\d{5,}/)) return true;
+    
+    // Alternate pattern seen on their site
+    if (url.match(/\/[^\/]+\/\d{5,}\/buy/)) return true;
+    
+    return false;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
  * Special handler for Virgio pages
  */
 async function handleVirgioLinks(page) {
@@ -832,7 +730,6 @@ async function handleVirgioLinks(page) {
       });
     }
     
-    console.log(`Found ${links.size} links on Virgio page`);
     return Array.from(links);
   });
 }
@@ -878,13 +775,12 @@ async function handleWestsideLinks(page) {
       });
     }
     
-    console.log(`Found ${links.size} links on Westside page`);
     return Array.from(links);
   });
 }
 
 /**
- * Special extraction and validation for NykaaFashion
+ * Special function for NykaaFashion links extraction
  */
 async function extractNykaaFashionLinks(page) {
   return await page.evaluate(() => {
@@ -917,24 +813,79 @@ async function extractNykaaFashionLinks(page) {
 }
 
 /**
- * Validate Nykaa Fashion product URLs more strictly
+ * Extract product links from a grid layout with site-specific enhancements
  */
-function validateNykaaFashionProductUrl(url) {
-  try {
-    // Must be a Nykaa Fashion URL
-    if (!url.includes('nykaafashion.com')) return false;
-    
-    // Must match the specific pattern for Nykaa products
-    // Pattern is usually: /some-product-description/p/12345678
-    if (url.match(/\/p\/\d{5,}/)) return true;
-    
-    // Alternate pattern seen on their site
-    if (url.match(/\/[^\/]+\/\d{5,}\/buy/)) return true;
-    
-    return false;
-  } catch (e) {
-    return false;
+async function extractProductLinksFromGrid(page) {
+  const url = await page.url();
+  const domain = new URL(url).hostname;
+  
+  // Site-specific selectors based on domain
+  const additionalSelectors = [];
+  
+  if (domain.includes('westside.com')) {
+    additionalSelectors.push(
+      // Westside specific selectors
+      '.grid__item',
+      '.grid-product__content',
+      '.product-card',
+      '.product-item',
+      'a[href*="/products/"]'
+    );
+  } else if (domain.includes('virgio.com')) {
+    additionalSelectors.push(
+      // Virgio specific selectors
+      '.product-item', 
+      '.product-card',
+      '.item-container',
+      'a[href*="/products/"]'
+    );
   }
+  
+  const productLinks = await page.evaluate((additionalSelectors) => {
+    const links = new Set();
+    
+    // 1. Direct product link check - most reliable
+    [
+      'a[href*="/products/"]',
+      'a[href*="/product/"]',
+      'a[href*="/p/"]',
+      'a[href*="/p-mp"]',
+      'a[href$="/buy"]'
+    ].forEach(selector => {
+      document.querySelectorAll(selector).forEach(el => {
+        if (el.href && el.href.includes('http')) {
+          links.add(el.href);
+        }
+      });
+    });
+    
+    // 2. Check product cards with site-specific selectors
+    const allSelectors = [
+      '.product-card', 
+      '.product-item', 
+      '.product-tile', 
+      '.grid-view-item',
+      '[class*="product-card"]',
+      '[class*="productCard"]', 
+      ...additionalSelectors
+    ];
+    
+    allSelectors.forEach(selector => {
+      const cards = document.querySelectorAll(selector);
+      cards.forEach(card => {
+        const anchors = card.querySelectorAll('a[href]');
+        anchors.forEach(a => {
+          if (a.href && a.href.includes('http')) {
+            links.add(a.href);
+          }
+        });
+      });
+    });
+    
+    return Array.from(links);
+  }, additionalSelectors);
+  
+  return productLinks;
 }
 
 /**

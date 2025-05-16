@@ -121,7 +121,7 @@ fastify.ready(err => {
         return;
       }
 
-      console.log('Received startCrawl event with data:', data);
+      console.log('Starting crawl with domains:', data.domains?.join(', '));
       activeCrawling = true;
       
       // Track active domains for this socket
@@ -137,6 +137,15 @@ fastify.ready(err => {
           onUpdate: (update) => {
             // Only send updates if socket is still connected
             if (socket.connected) {
+              // Add additional progress info to regular updates when available
+              if (update.domain && update.status && !update.type !== 'product') {
+                // Try to extract progress data from crawler
+                const crawler = crawlProcess && crawlProcess.currentResults ? 
+                  crawlProcess.currentResults[update.domain]?.length || 0 : 0;
+                  
+                // Add progress data if available
+                update.productsFound = crawler;
+              }
               socket.emit('crawlUpdate', update);
             }
           },
@@ -172,7 +181,7 @@ fastify.ready(err => {
           }
         });
       } catch (error) {
-        console.error('Error starting crawler:', error);
+        console.error('Error starting crawler:', error.message);
         socket.emit('crawlError', { message: error.message });
         activeCrawling = false;
         crawlProcess = null;
@@ -183,6 +192,7 @@ fastify.ready(err => {
     // Handle stop crawl event
     socket.on('stopCrawl', async () => {
       if (activeCrawling) {
+        console.log('Stop requested, terminating crawl processes...');
         socket.emit('crawlUpdate', { message: 'Stop requested, terminating crawl processes...', type: 'warning' });
         
         try {
@@ -212,7 +222,7 @@ fastify.ready(err => {
           socket.emit('crawlUpdate', { message: 'Crawling stopped successfully', type: 'success' });
           
         } catch (error) {
-          console.error('Failed to stop crawler:', error);
+          console.error('Failed to stop crawler:', error.message);
           socket.emit('crawlError', { message: `Error stopping crawl: ${error.message}` });
           
           // Still notify the client that crawling was stopped
