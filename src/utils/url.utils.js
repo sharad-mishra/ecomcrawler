@@ -1,12 +1,26 @@
-// Product URL patterns
+// Product URL patterns - Add more patterns for specific sites
 const PRODUCT_PATTERNS = [
-  /\/products\//i,
-  /\/product\//i, 
-  /\/p\//i, 
-  /\/item\//i,
-  /\/p-mp/i,  // TataCliq product pattern
-  /\/[^\/]+\/p-mp/i,  // Another TataCliq product pattern
-  /\/pdp\//i
+  // Generic product patterns that work across most sites
+  /\/p\/[\w\d-]+/i,           // Common /p/ pattern (Nykaa, Ajio)
+  /\/products\/[\w\d-]+/i,     // /products/ pattern (Westside, Virgio)
+  /\/product\/[\w\d-]+/i,      // /product/ pattern
+  /\/p-mp[\w\d]+/i,            // TataCliq pattern
+  /\/[^\/]+\/p-mp[\w\d]+/i,    // Alternative TataCliq pattern
+  
+  // Site-specific patterns
+  /\/[\w\d-]+\/buy$/i,         // Myntra pattern: /numeric-id/buy
+  /\/[\w\d]+\/buy/i,           // Myntra alternative pattern
+  
+  // General common patterns
+  /\/pdp\//i,                  // Product detail page
+  /\/item\//i,                 // Item pattern
+  /\/collections\/[^\/]+\/products\/[^\/]+$/i, // Shopify pattern
+  
+  // Additional helpful patterns
+  /\/[\d]+\/?$/i,              // Ends with numeric ID
+  /\/dp\//i,                   // Amazon style
+  /\/product-detail\//i,       // Detail pattern
+  /\/detail\//i                // Short detail pattern
 ];
 
 // Category patterns
@@ -29,22 +43,116 @@ const EXCLUDE_PATTERNS = [
 ];
 
 /**
- * Fast check if URL is a product page
+ * Enhanced product URL validator that checks against known e-commerce patterns
+ * Works with examples from TataCliq, Westside, NykaaFashion, Virgio, Ajio, and Myntra
  */
 function isProductUrl(url) {
   try {
-    // Special case for TataCliq
-    if (url.includes('tatacliq.com') && (url.includes('/p-mp') || url.match(/\/[^\/]+\/p-mp/))) {
-      return true;
+    if (!url || typeof url !== 'string') return false;
+    
+    // Normalize URL for comparison
+    url = url.toLowerCase();
+    
+    // Extract domain for site-specific checks
+    let domain = '';
+    try {
+      domain = new URL(url).hostname;
+    } catch (e) {
+      // If URL parsing fails, try a simpler approach
+      const match = url.match(/https?:\/\/([^\/]+)/i);
+      domain = match ? match[1] : '';
     }
     
-    const { pathname } = new URL(url);
-    // Fast loop instead of .some()
-    for (let i = 0; i < PRODUCT_PATTERNS.length; i++) {
-      if (PRODUCT_PATTERNS[i].test(pathname)) return true;
+    // Complete URL pattern checks for each site type
+    
+    // 1. TataCliq: https://www.tatacliq.com/campus-mens-north-plus-dark-grey-running-shoes/p-mp000000008351719
+    if (domain.includes('tatacliq.com')) {
+      if (url.includes('/p-mp')) return true;
     }
+    
+    // 2. Westside (Shopify): https://www.westside.com/products/hop-baby-light-taupe-high-rise-denim-shorts-301016143
+    if (domain.includes('westside.com')) {
+      // Very specific check for Westside
+      if (url.includes('/products/')) return true;
+      if (url.match(/\/collections\/[^\/]+\/products\//i)) return true;
+    }
+    
+    // 3. NykaaFashion: https://www.nykaafashion.com/mabish-by-sonal-jain-pink-crop-top-with-draped-skirt-and-cape-set-of-3/p/18431713
+    if (domain.includes('nykaafashion.com')) {
+      // Stricter checking for NykaaFashion - must have /p/ followed by numeric ID
+      if (url.match(/\/p\/\d{5,}/)) return true;
+    }
+    
+    // 4. Virgio: https://www.virgio.com/products/boho-west-trucotton-peplum-waist-tie-front-top
+    if (domain.includes('virgio.com')) {
+      if (url.includes('/products/')) return true;
+      if (url.includes('/product/')) return true;
+      if (url.includes('/product-detail/')) return true;
+    }
+    
+    // 5. Ajio: https://www.ajio.com/red-tape-men-quilted-regular-fit-puffer-jacket/p/700384757_olive
+    if (domain.includes('ajio.com')) {
+      if (url.includes('/p/')) return true;
+    }
+    
+    // 6. Myntra: https://www.myntra.com/handbags/caprese/caprese-animal-textured-faux-leather-structured-satchel-bag/30777604/buy
+    if (domain.includes('myntra.com')) {
+      if (url.endsWith('/buy') || url.includes('/buy?')) return true;
+    }
+    
+    // Generic pattern checks (for all sites)
+    
+    // Check path segments for product indicators
+    try {
+      const pathname = new URL(url).pathname;
+      
+      // Fast pattern matching for common patterns
+      const productPatterns = [
+        /\/products\/[\w-]+/i,       // Shopify pattern
+        /\/product\/[\w-]+/i,         // Common pattern
+        /\/p\/[\w-]+\/?\d+/i,         // Pattern with ID
+        /\/p-mp[\w\d]+/i,             // TataCliq pattern
+        /\/[\w-]+\/p-mp[\w\d]+/i,     // TataCliq alternative
+        /\/[\d]+\/buy$/i,             // Myntra pattern
+        /\/product-detail\/[\w-]+/i   // Virgio pattern
+      ];
+      
+      for (const pattern of productPatterns) {
+        if (pattern.test(pathname)) return true;
+      }
+      
+      // Only check numeric ID if the URL doesn't have common category patterns
+      if (!pathname.includes('/category/') && 
+          !pathname.includes('/collection') && 
+          !pathname.includes('/shop/') &&
+          !pathname.includes('/search')) {
+        
+        // Check numeric ID indicators (very reliable)
+        const segments = pathname.split('/').filter(Boolean);
+        for (const segment of segments) {
+          // If a segment is purely numeric with 5+ digits, probably a product ID
+          if (/^\d{5,}$/.test(segment)) return true;
+        }
+      }
+    } catch (e) {
+      // URL parsing failed, fall back to simpler checks
+    }
+    
+    // Check URL query parameters often used for products
+    try {
+      const urlObj = new URL(url);
+      const productParams = ['pid', 'productId', 'product_id', 'itemId', 'sku', 'variant'];
+      for (const param of productParams) {
+        if (urlObj.searchParams.has(param)) return true;
+      }
+    } catch (e) {
+      // URL parsing failed
+    }
+    
+    // If nothing matched, it's probably not a product URL
     return false;
-  } catch {
+  } catch (error) {
+    console.error(`Error in isProductUrl: ${error.message}`);
     return false;
   }
 }
