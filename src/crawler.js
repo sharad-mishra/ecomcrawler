@@ -28,6 +28,9 @@ if (!fs.existsSync(outputDir)) {
 export async function startCrawling({ domains, onUpdate, onComplete, onError, onProductFound }) {
   // Add onProductFound to parameters
   
+  // Add a global cancellation flag
+  global.crawlCancelled = false;
+  
   // Validate domains
   if (!domains || domains.length === 0) {
     if (onError) onError({ message: 'No domains provided' });
@@ -37,6 +40,86 @@ export async function startCrawling({ domains, onUpdate, onComplete, onError, on
   // Send initial update
   if (onUpdate) onUpdate({ message: 'Starting crawl process' });
 
+  // Create a single, robust crawlProcess object with stop method
+  const crawlProcess = {
+    domains,
+    activeBrowsers: new Set(),
+    currentResults: {},
+    
+    // Add method to save current results at any time
+    saveCurrentResults: async function() {
+      try {
+        // Create a partial results object with current product URLs
+        const output = {};
+        
+        // Add all domains that have been processed so far
+        for (const domain of this.domains) {
+          if (this.currentResults[domain]) {
+            output[domain] = {
+              productUrls: this.currentResults[domain],
+              count: this.currentResults[domain].length
+            };
+          } else {
+            output[domain] = { productUrls: [], count: 0 };
+          }
+        }
+        
+        // Save to file
+        const productFileName = config.get('productFileName');
+        
+        fs.writeFileSync(
+          path.join(outputDir, productFileName),
+          JSON.stringify(output, null, 2)
+        );
+        
+        return output;
+      } catch (err) {
+        console.error('Error saving current results:', err);
+        throw err;
+      }
+    },
+    
+    stop: async function() {
+      try {
+        // Set global flag - this stops all crawling processes
+        global.crawlCancelled = true;
+        
+        if (onUpdate) onUpdate({ message: 'Crawler stop requested, terminating all processes...', type: 'warning' });
+        
+        try {
+          // Save current results before closing browsers
+          await this.saveCurrentResults();
+        } catch (saveError) {
+          console.error('Error saving partial results during stop:', saveError);
+        }
+        
+        // Close all browsers with improved error handling
+        for (const browser of this.activeBrowsers) {
+          try {
+            // Try normal close with timeout
+            await Promise.race([
+              browser.close().catch(err => console.error('Error closing browser:', err.message)),
+              new Promise(resolve => setTimeout(resolve, 1000))
+            ]);
+          } catch (err) {
+            console.error('Error closing browser during stop:', err);
+          }
+        }
+        
+        this.activeBrowsers.clear();
+        
+        // Wait a moment for cancellation to take effect
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        if (onUpdate) onUpdate({ message: 'Crawling stopped by user', type: 'success' });
+        return true;
+      } catch (err) {
+        console.error('Error in stop function:', err);
+        throw err;
+      }
+    }
+  };
+  
   try {
     // Configure concurrent crawling
     const concurrencyLimit = config.get('concurrencyLimit') || 2;
@@ -47,6 +130,7 @@ export async function startCrawling({ domains, onUpdate, onComplete, onError, on
       domainName: domain
     }));
 
+    // Store browser reference for cleanup
     // Start crawling in parallel
     const results = await Promise.allSettled(
       domainsConfig.map(domainInfo => 
@@ -106,7 +190,7 @@ export async function startCrawling({ domains, onUpdate, onComplete, onError, on
     // Send completion update
     if (onComplete) onComplete(output);
     
-    return output;
+    return crawlProcess; // Return the process with stop function
   } catch (error) {
     console.error('Error during crawling:', error);
     if (onError) onError({ message: error.message });
@@ -131,326 +215,360 @@ async function crawlSite(domainInfo, onUpdate, onProductFound) {
   });
 
   // Launch browser with improved settings
-  const browser = await puppeteer.launch({
-    headless: "new",
-    args: [
-      '--no-sandbox', 
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage'
-    ]
-  });
-
-  const page = await browser.newPage();
+  let browser = null;
   
-  // Tracking variables - initialize these to fix the "not defined" error
-  let pagesVisited = 0;
-  let noNewProductsCounter = 0;
-  const MAX_NO_PRODUCT_PAGES = 20; // Stop after this many pages with no new products
-  const maxPages = config.has('maxPages') ? config.get('maxPages') : 500; // Use default if not configured
-  
-  // Set up enhanced crawl state with prioritization
-  const visited = new Set();
-  const queue = [...startingUrls.map(url => ({ url, priority: 0, depth: 0 }))];  // Track priority & depth
-  const productUrls = new Set();
-  const failedUrls = new Set();
-  
-  // Cache for pages that have already been checked for pagination
-  const paginationChecked = new Set();
-  
-  // Additional tracking for improved crawling
-  const categoryPages = new Set();
-  const productListingPages = new Set();
-  
-  if (onUpdate) onUpdate({ 
-    domain: domainName, 
-    status: `Starting crawl from ${startUrl}`, 
-    type: 'info' 
-  });
-
   try {
-    // Main crawling loop with prioritized queue
-    while (queue.length > 0 && 
-           pagesVisited < maxPages && 
-           (!maxCrawlTime || (startTime && Date.now() - startTime < maxCrawlTime)) &&
-           noNewProductsCounter < MAX_NO_PRODUCT_PAGES) {
-      
-      // Sort queue by priority: category pages first, then by depth (breadth-first)
-      queue.sort((a, b) => {
-        // Higher priority number = higher precedence
-        if (a.priority !== b.priority) return b.priority - a.priority;
-        // Lower depth = higher precedence (breadth-first)
-        return a.depth - b.depth;
-      });
-      
-      // Get next URL from queue
-      const queueItem = queue.shift();
-      const url = queueItem.url;
-      const depth = queueItem.depth || 0;
-      const pageType = queueItem.pageType || 'general';
-      
-      const normalizedUrl = normalizeUrl(url);
-      
-      if (visited.has(normalizedUrl)) continue;
-      visited.add(normalizedUrl);
-      
-      if (onUpdate) onUpdate({ 
-        domain: domainName, 
-        status: `Visiting: ${normalizedUrl} [${pagesVisited+1}/${maxPages}]`,
-        type: 'info'
-      });
-      
-      try {
-        // Navigate to page - ALWAYS navigate first before any processing
-        await page.goto(normalizedUrl, { 
-          waitUntil: "networkidle2", 
-          timeout: 30000 
-        });
-        
-        const productCountBefore = productUrls.size;
-        
-        // Check current domain for site-specific handling AFTER page loads
-        const currentDomain = new URL(page.url()).hostname;
-        
-        // Extract links using appropriate method based on site
-        let links = [];
-        let usedSiteSpecificHandler = false;
-        
-        // Site-specific handling AFTER the page is loaded
-        if (currentDomain.includes('virgio.com')) {
-          console.log(`Using special handling for Virgio page: ${page.url()}`);
-          try {
-            // Handle Virgio differently - perform more aggressive link extraction
-            await scrollPage(page, domainName, onUpdate);
-            links = await handleVirgioLinks(page);
-            console.log(`Found ${links.length} Virgio-specific links`);
-            usedSiteSpecificHandler = true;
-          } catch (err) {
-            console.error(`Error in Virgio handler: ${err.message}`);
-            // Fall back to standard extraction
-            usedSiteSpecificHandler = false; 
-          }
-        } else if (currentDomain.includes('westside.com')) {
-          console.log(`Using special handling for Westside page: ${page.url()}`);
-          try {
-            // Handle Westside differently - they use Shopify platform
-            await scrollPage(page, domainName, onUpdate);
-            links = await handleWestsideLinks(page);
-            console.log(`Found ${links.length} Westside-specific links`);
-            usedSiteSpecificHandler = true;
-          } catch (err) {
-            console.error(`Error in Westside handler: ${err.message}`);
-            // Fall back to standard extraction
-            usedSiteSpecificHandler = false;
-          }
-        } else if (currentDomain.includes('nykaafashion.com')) {
-          try {
-            // Special handling for Nykaa Fashion
-            await scrollPage(page, domainName, onUpdate);
-            links = await extractNykaaFashionLinks(page);
-            console.log(`Found ${links.length} NykaaFashion-specific links`);
-            usedSiteSpecificHandler = true;
-          } catch (err) {
-            console.error(`Error in NykaaFashion handler: ${err.message}`);
-            usedSiteSpecificHandler = false;
-          }
-        }
-        
-        // If site-specific handler failed or wasn't used, fallback to generic handling
-        if (!usedSiteSpecificHandler) {
-          // If we detect this is a product page, add it to product URLs
-          if (isProductUrl(page.url())) {
-            const currentProductUrl = normalizeUrl(page.url());
-            if (!productUrls.has(currentProductUrl)) {
-              productUrls.add(currentProductUrl);
-              
-              if (onUpdate) onUpdate({ 
-                type: 'product',
-                domain: domainName, 
-                url: currentProductUrl
-              });
-              
-              if (typeof onProductFound === 'function') {
-                onProductFound({
-                  domain: domainName,
-                  url: currentProductUrl
-                });
-              }
-            }
-          }
-          
-          try {
-            // Try to detect page type
-            const pageClassification = await detectPageType(page);
-            
-            // Handle different page types appropriately
-            if (pageClassification === 'productList') {
-              // This is a product listing page - try extracting product cards directly
-              await handleProductListPage(page, domainName, onUpdate);
-              links = await extractProductLinksFromGrid(page);
-            } else if (pageClassification === 'category') {
-              // This is a category page - get subcategories and any featured products
-              await handleCategoryPage(page, domainName, onUpdate);
-              links = await extractCategoryLinks(page);
-            } else {
-              // Standard page - extract all links
-              links = await extractStandardLinks(page);
-            }
-          } catch (err) {
-            // Fallback to basic link extraction if the improved methods fail
-            console.error(`Error during specialized extraction: ${err.message}`);
-            links = await page.evaluate(() => 
-              Array.from(document.querySelectorAll('a[href]')).map(a => a.href)
-                .filter(href => href && href.startsWith('http'))
-            );
-          }
-        }
-        
-        if (onUpdate) onUpdate({ 
-          domain: domainName, 
-          status: `Found ${links.length} links on ${normalizedUrl}`,
-          type: 'info'
-        });
-
-        // Process links
-        for (const link of links) {
-          const normalizedLink = normalizeUrl(link);
-          
-          // Skip if already visited or queued
-          if (visited.has(normalizedLink) || queue.some(item => item.url === normalizedLink)) {
-            continue;
-          }
-          
-          // Only process links on the same domain
-          if (!isSameDomain(link, domainName)) {
-            continue;
-          }
-          
-          // Skip excluded URLs (unless they're product URLs)
-          if (shouldExcludeUrl(link) && !isProductUrl(link)) {
-            continue;
-          }
-          
-          // Prioritize links based on type
-          if (isProductUrl(normalizedLink)) {
-            // Validate product URL more strictly if it's NykaaFashion
-            let isValidProduct = true;
-            if (domainName.includes('nykaafashion')) {
-              isValidProduct = validateNykaaFashionProductUrl(normalizedLink);
-            }
-            
-            // It's a product - add directly to results if valid
-            if (isValidProduct && !productUrls.has(normalizedLink)) {
-              productUrls.add(normalizedLink);
-              noNewProductsCounter = 0; // Reset counter
-              
-              if (onUpdate) onUpdate({ 
-                type: 'product',
-                domain: domainName, 
-                url: normalizedLink
-              });
-              
-              if (typeof onProductFound === 'function') {
-                onProductFound({
-                  domain: domainName,
-                  url: normalizedLink
-                });
-              }
-            }
-          } else {
-            // Determine priority and page type for the queue
-            let priority = 0;
-            let newPageType = 'general';
-            
-            if (isCategoryUrl(normalizedLink)) {
-              // Category pages get highest priority
-              priority = 3;
-              newPageType = 'category';
-            } else if (link.includes('collection') || link.includes('shop-by') || 
-                      link.includes('products') || link.match(/\/[^\/]+\/[^\/]+\/?$/)) {
-              // Potential product listing pages get medium-high priority
-              priority = 2;
-              newPageType = 'productList';
-            } else if (depth < 2) {
-              // Main navigation links (shallow depth) get medium priority
-              priority = 1;
-            }
-            
-            // Add to queue with priority and increased depth
-            queue.push({
-              url: normalizedLink,
-              priority,
-              depth: depth + 1,
-              pageType: newPageType
-            });
-          }
-        }
-        
-        // Update stats and check for stopping conditions
-        pagesVisited++;
-        if (productUrls.size > productCountBefore) {
-          noNewProductsCounter = 0; // Reset if we found new products
-        } else {
-          noNewProductsCounter++; // Increment if no new products found
-        }
-        
-        if (onUpdate) onUpdate({ 
-          domain: domainName, 
-          status: `Found ${productUrls.size} product URLs so far (${noNewProductsCounter} pages with no new products)`,
-          type: 'info'
-        });
-      } catch (err) {
-        console.error(`Failed to crawl ${url}: ${err.message}`);
-        failedUrls.add(url);
-        
-        if (onUpdate) onUpdate({ 
-          domain: domainName, 
-          status: `Failed to crawl ${url}: ${err.message}`,
-          type: 'error'
-        });
-      }
+    browser = await puppeteer.launch({
+      headless: "new",
+      args: [
+        '--no-sandbox', 
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage'
+      ]
+    });
+    
+    // Add browser to active browsers for cleanup
+    if (global.crawlProcess && global.crawlProcess.activeBrowsers) {
+      global.crawlProcess.activeBrowsers.add(browser);
     }
     
-    // Log why we stopped crawling
-    if (queue.length === 0) {
-      if (onUpdate) onUpdate({
-        domain: domainName,
-        status: `Completed crawl: No more URLs to visit`,
-        type: 'success'
-      });
-    } else if (pagesVisited >= maxPages) {
-      if (onUpdate) onUpdate({
-        domain: domainName,
-        status: `Completed crawl: Reached maximum page limit (${maxPages})`,
-        type: 'success' 
-      });
-    } else if (noNewProductsCounter >= MAX_NO_PRODUCT_PAGES) {
-      if (onUpdate) onUpdate({
-        domain: domainName,
-        status: `Completed crawl: No new products found in ${MAX_NO_PRODUCT_PAGES} consecutive pages`,
-        type: 'success'
-      });
-    } else if (maxCrawlTime && Date.now() - startTime > maxCrawlTime) {
-      if (onUpdate) onUpdate({
-        domain: domainName,
-        status: `Completed crawl: Reached maximum crawl time`,
-        type: 'success'
-      });
-    }
-  } finally {
-    await browser.close();
+    const page = await browser.newPage();
+    
+    // Tracking variables - initialize these to fix the "not defined" error
+    let pagesVisited = 0;
+    let noNewProductsCounter = 0;
+    const MAX_NO_PRODUCT_PAGES = 20; // Stop after this many pages with no new products
+    const maxPages = config.has('maxPages') ? config.get('maxPages') : 500; // Use default if not configured
+    
+    // Set up enhanced crawl state with prioritization
+    const visited = new Set();
+    const queue = [...startingUrls.map(url => ({ url, priority: 0, depth: 0 }))];  // Track priority & depth
+    const productUrls = new Set();
+    const failedUrls = new Set();
+    
+    // Cache for pages that have already been checked for pagination
+    const paginationChecked = new Set();
+    
+    // Additional tracking for improved crawling
+    const categoryPages = new Set();
+    const productListingPages = new Set();
     
     if (onUpdate) onUpdate({ 
       domain: domainName, 
-      status: `Completed. Found ${productUrls.size} product URLs from ${pagesVisited} pages.`,
-      type: 'success'
+      status: `Starting crawl from ${startUrl}`, 
+      type: 'info' 
     });
-  }
 
-  return {
-    domainName,
-    productUrls: Array.from(productUrls),
-    failedUrls: Array.from(failedUrls),
-  };
+    try {
+      // Check for cancellation flag periodically
+      const checkCancellation = setInterval(() => {
+        if (global.crawlCancelled) {
+          clearInterval(checkCancellation);
+          queue.length = 0; // Clear queue to stop crawling
+        }
+      }, 1000);
+      
+      // Main crawling loop with prioritized queue
+      while (queue.length > 0 && 
+             pagesVisited < maxPages && 
+             (!maxCrawlTime || (startTime && Date.now() - startTime < maxCrawlTime)) &&
+             noNewProductsCounter < MAX_NO_PRODUCT_PAGES) {
+        
+        // CHECK CANCELLATION FLAG - Exit immediately if cancelled
+        if (global.crawlCancelled) {
+          if (onUpdate) onUpdate({ 
+            domain: domainName, 
+            status: `Crawling cancelled by user request`,
+            type: 'warning'
+          });
+          break;
+        }
+        
+        // Sort queue by priority: category pages first, then by depth (breadth-first)
+        queue.sort((a, b) => {
+          // Higher priority number = higher precedence
+          if (a.priority !== b.priority) return b.priority - a.priority;
+          // Lower depth = higher precedence (breadth-first)
+          return a.depth - b.depth;
+        });
+        
+        // Get next URL from queue
+        const queueItem = queue.shift();
+        const url = queueItem.url;
+        const depth = queueItem.depth || 0;
+        const pageType = queueItem.pageType || 'general';
+        
+        const normalizedUrl = normalizeUrl(url);
+        
+        if (visited.has(normalizedUrl)) continue;
+        visited.add(normalizedUrl);
+        
+        if (onUpdate) onUpdate({ 
+          domain: domainName, 
+          status: `Visiting: ${normalizedUrl} [${pagesVisited+1}/${maxPages}]`,
+          type: 'info'
+        });
+        
+        try {
+          // Check cancellation before navigation
+          if (global.crawlCancelled) break;
+          
+          // Navigate to page - ALWAYS navigate first before any processing
+          await page.goto(normalizedUrl, { 
+            waitUntil: "networkidle2", 
+            timeout: 30000 
+          });
+          
+          const productCountBefore = productUrls.size;
+          
+          // Check current domain for site-specific handling AFTER page loads
+          const currentDomain = new URL(page.url()).hostname;
+          
+          // Extract links using appropriate method based on site
+          let links = [];
+          let usedSiteSpecificHandler = false;
+          
+          // Site-specific handling AFTER the page is loaded
+          if (currentDomain.includes('virgio.com')) {
+            console.log(`Using special handling for Virgio page: ${page.url()}`);
+            try {
+              // Handle Virgio differently - perform more aggressive link extraction
+              await scrollPage(page, domainName, onUpdate);
+              links = await handleVirgioLinks(page);
+              console.log(`Found ${links.length} Virgio-specific links`);
+              usedSiteSpecificHandler = true;
+            } catch (err) {
+              console.error(`Error in Virgio handler: ${err.message}`);
+              // Fall back to standard extraction
+              usedSiteSpecificHandler = false; 
+            }
+          } else if (currentDomain.includes('westside.com')) {
+            console.log(`Using special handling for Westside page: ${page.url()}`);
+            try {
+              // Handle Westside differently - they use Shopify platform
+              await scrollPage(page, domainName, onUpdate);
+              links = await handleWestsideLinks(page);
+              console.log(`Found ${links.length} Westside-specific links`);
+              usedSiteSpecificHandler = true;
+            } catch (err) {
+              console.error(`Error in Westside handler: ${err.message}`);
+              // Fall back to standard extraction
+              usedSiteSpecificHandler = false;
+            }
+          } else if (currentDomain.includes('nykaafashion.com')) {
+            try {
+              // Special handling for Nykaa Fashion
+              await scrollPage(page, domainName, onUpdate);
+              links = await extractNykaaFashionLinks(page);
+              console.log(`Found ${links.length} NykaaFashion-specific links`);
+              usedSiteSpecificHandler = true;
+            } catch (err) {
+              console.error(`Error in NykaaFashion handler: ${err.message}`);
+              usedSiteSpecificHandler = false;
+            }
+          }
+          
+          // If site-specific handler failed or wasn't used, fallback to generic handling
+          if (!usedSiteSpecificHandler) {
+            // If we detect this is a product page, add it to product URLs
+            if (isProductUrl(page.url())) {
+              const currentProductUrl = normalizeUrl(page.url());
+              if (!productUrls.has(currentProductUrl)) {
+                productUrls.add(currentProductUrl);
+                
+                if (onUpdate) onUpdate({ 
+                  type: 'product',
+                  domain: domainName, 
+                  url: currentProductUrl
+                });
+                
+                if (typeof onProductFound === 'function') {
+                  onProductFound({
+                    domain: domainName,
+                    url: currentProductUrl
+                  });
+                }
+              }
+            }
+            
+            try {
+              // Try to detect page type
+              const pageClassification = await detectPageType(page);
+              
+              // Handle different page types appropriately
+              if (pageClassification === 'productList') {
+                // This is a product listing page - try extracting product cards directly
+                await handleProductListPage(page, domainName, onUpdate);
+                links = await extractProductLinksFromGrid(page);
+              } else if (pageClassification === 'category') {
+                // This is a category page - get subcategories and any featured products
+                await handleCategoryPage(page, domainName, onUpdate);
+                links = await extractCategoryLinks(page);
+              } else {
+                // Standard page - extract all links
+                links = await extractStandardLinks(page);
+              }
+            } catch (err) {
+              // Fallback to basic link extraction if the improved methods fail
+              console.error(`Error during specialized extraction: ${err.message}`);
+              links = await page.evaluate(() => 
+                Array.from(document.querySelectorAll('a[href]')).map(a => a.href)
+                  .filter(href => href && href.startsWith('http'))
+              );
+            }
+          }
+          
+          if (onUpdate) onUpdate({ 
+            domain: domainName, 
+            status: `Found ${links.length} links on ${normalizedUrl}`,
+            type: 'info'
+          });
+
+          // Process links
+          for (const link of links) {
+            const normalizedLink = normalizeUrl(link);
+            
+            // Skip if already visited or queued
+            if (visited.has(normalizedLink) || queue.some(item => item.url === normalizedLink)) {
+              continue;
+            }
+            
+            // Only process links on the same domain
+            if (!isSameDomain(link, domainName)) {
+              continue;
+            }
+            
+            // Skip excluded URLs (unless they're product URLs)
+            if (shouldExcludeUrl(link) && !isProductUrl(link)) {
+              continue;
+            }
+            
+            // Prioritize links based on type
+            if (isProductUrl(normalizedLink)) {
+              // Validate product URL more strictly if it's NykaaFashion
+              let isValidProduct = true;
+              if (domainName.includes('nykaafashion')) {
+                isValidProduct = validateNykaaFashionProductUrl(normalizedLink);
+              }
+              
+              // It's a product - add directly to results if valid
+              if (isValidProduct && !productUrls.has(normalizedLink)) {
+                productUrls.add(normalizedLink);
+                noNewProductsCounter = 0; // Reset counter
+                
+                // Add to current results for partial saves
+                if (global.crawlProcess && global.crawlProcess.currentResults) {
+                  if (!global.crawlProcess.currentResults[domainName]) {
+                    global.crawlProcess.currentResults[domainName] = [];
+                  }
+                  global.crawlProcess.currentResults[domainName].push(normalizedLink);
+                }
+                
+                if (onUpdate) onUpdate({ 
+                  type: 'product',
+                  domain: domainName, 
+                  url: normalizedLink
+                });
+                
+                if (typeof onProductFound === 'function') {
+                  onProductFound({
+                    domain: domainName,
+                    url: normalizedLink
+                  });
+                }
+              }
+            } else {
+              // Determine priority and page type for the queue
+              let priority = 0;
+              let newPageType = 'general';
+              
+              if (isCategoryUrl(normalizedLink)) {
+                // Category pages get highest priority
+                priority = 3;
+                newPageType = 'category';
+              } else if (link.includes('collection') || link.includes('shop-by') || 
+                        link.includes('products') || link.match(/\/[^\/]+\/[^\/]+\/?$/)) {
+                // Potential product listing pages get medium-high priority
+                priority = 2;
+                newPageType = 'productList';
+              } else if (depth < 2) {
+                // Main navigation links (shallow depth) get medium priority
+                priority = 1;
+              }
+              
+              // Add to queue with priority and increased depth
+              queue.push({
+                url: normalizedLink,
+                priority,
+                depth: depth + 1,
+                pageType: newPageType
+              });
+            }
+          }
+          
+          // Update stats and check for stopping conditions
+          pagesVisited++;
+          if (productUrls.size > productCountBefore) {
+            noNewProductsCounter = 0; // Reset if we found new products
+          } else {
+            noNewProductsCounter++; // Increment if no new products found
+          }
+          
+          if (onUpdate) onUpdate({ 
+            domain: domainName, 
+            status: `Found ${productUrls.size} product URLs so far (${noNewProductsCounter} pages with no new products)`,
+            type: 'info'
+          });
+        } catch (err) {
+          console.error(`Failed to crawl ${url}: ${err.message}`);
+          failedUrls.add(url);
+          
+          if (onUpdate) onUpdate({ 
+            domain: domainName, 
+            status: `Failed to crawl ${url}: ${err.message}`,
+            type: 'error'
+          });
+        }
+      }
+      
+      // Clear the cancellation check
+      clearInterval(checkCancellation);
+    } finally {
+      // IMPORTANT: Make sure browser is always closed, even if cancelled
+      if (browser) {
+        try {
+          await browser.close();
+        } catch (closeErr) {
+          console.error(`Error closing browser: ${closeErr.message}`);
+        }
+      }
+      
+      // Clear cancellation state when this crawler instance finishes
+      if (global.crawlCancelled) {
+        if (onUpdate) onUpdate({ 
+          domain: domainName, 
+          status: `Crawling terminated by stop request`,
+          type: 'warning'
+        });
+      } else {
+        if (onUpdate) onUpdate({ 
+          domain: domainName, 
+          status: `Completed. Found ${productUrls.size} product URLs from ${pagesVisited} pages.`,
+          type: 'success'
+        });
+      }
+    }
+
+    return {
+      domainName,
+      productUrls: Array.from(productUrls),
+      failedUrls: Array.from(failedUrls),
+    };
+  } catch (error) {
+    console.error('Error during crawling:', error);
+    if (onError) onError({ message: error.message });
+    throw error;
+  }
 }
 
 /**

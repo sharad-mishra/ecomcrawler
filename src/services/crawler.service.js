@@ -4,12 +4,40 @@ const config = require('config');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { isProductUrl, normalizeUrl, isSameDomain } = require('../utils/url.utils');
+const { exec } = require('child_process');
+const { promisify } = require('util');
+const execAsync = promisify(exec);
 
 // Use stealth plugin to avoid detection
 puppeteer.use(StealthPlugin());
 
 // Track active crawlers
 const activeCrawlers = new Map();
+// Add heartbeat tracking for all crawlers
+const crawlerHeartbeats = new Map();
+const HEARTBEAT_INTERVAL = 5000; // 5 seconds
+const MAX_MISSED_HEARTBEATS = 3; // Consider crawler dead after missing 3 heartbeats
+
+// Start heartbeat monitoring for all crawlers
+const heartbeatChecker = setInterval(() => {
+  const now = Date.now();
+  
+  // Check each crawler's last heartbeat
+  for (const [domain, crawler] of activeCrawlers.entries()) {
+    const lastHeartbeat = crawlerHeartbeats.get(domain) || 0;
+    
+    // If crawler hasn't sent a heartbeat recently, force terminate it
+    if (now - lastHeartbeat > (MAX_MISSED_HEARTBEATS * HEARTBEAT_INTERVAL)) {
+      console.warn(`Crawler for ${domain} appears to be stalled, forcing termination`);
+      stopCrawler(domain).catch(err => console.error(`Error force stopping crawler: ${err.message}`));
+    }
+  }
+}, HEARTBEAT_INTERVAL);
+
+// Ensure heartbeat checker is cleaned up on process exit
+process.on('exit', () => {
+  clearInterval(heartbeatChecker);
+});
 
 /**
  * Crawl a specific domain for product URLs
@@ -52,10 +80,6 @@ async function crawlDomain(domain, options = {}, socketId = null, io = null) {
   
   const page = await browser.newPage();
   
-  // Configure page
-  await page.setViewport({ width: 1280, height: 800 });
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-  
   // Set up crawler state
   const visited = new Set();
   const queue = [];
@@ -68,25 +92,54 @@ async function crawlDomain(domain, options = {}, socketId = null, io = null) {
     page,
     domain,
     queue,
+    visited,  // Important: add visited to the crawler object
     productLinks,
     failedUrls,
     crawlStats,
     settings,
     active: true,
-    cancelRequested: false
+    cancelRequested: false,
+    socketId,
+    io
   };
   
-  // Store crawler in active crawlers map
+  // Register crawler and set initial heartbeat
   activeCrawlers.set(domain, crawler);
+  crawlerHeartbeats.set(domain, Date.now());
+  
+  // Set up heartbeat update inside the crawling loop
+  const heartbeatUpdater = setInterval(() => {
+    // Only update heartbeat if crawler is still active
+    if (activeCrawlers.has(domain) && !crawler.cancelRequested) {
+      crawlerHeartbeats.set(domain, Date.now());
+    } else {
+      clearInterval(heartbeatUpdater);
+    }
+  }, HEARTBEAT_INTERVAL / 2);
+  
+  // Register socket disconnect handler if socket exists
+  if (io && socketId) {
+    const socket = io.sockets.sockets.get(socketId);
+    if (socket) {
+      // Set up one-time disconnect handler for this specific crawler
+      const disconnectHandler = () => {
+        console.log(`Socket ${socketId} disconnected, stopping crawler for ${domain}`);
+        stopCrawler(domain).catch(err => console.error(`Error stopping crawler on disconnect: ${err.message}`));
+        socket.removeListener('disconnect', disconnectHandler);
+      };
+      
+      socket.once('disconnect', disconnectHandler);
+    }
+  }
   
   // Determine starting points - use category URLs for TataCliq
   if (domainConfig.categoryUrls && domainConfig.categoryUrls.length > 0) {
     // Use category URLs as starting points for TataCliq
-    domainConfig.categoryUrls.forEach(url => queue.push(url));
+    domainConfig.categoryUrls.forEach(url => crawler.queue.push(url));
     console.log(`Starting with ${domainConfig.categoryUrls.length} category URLs for ${domain}`);
   } else {
     // Default to domain root
-    queue.push(domain);
+    crawler.queue.push(domain);
   }
   
   // Emit initial crawler info if Socket.IO is available
@@ -94,28 +147,37 @@ async function crawlDomain(domain, options = {}, socketId = null, io = null) {
     io.to(socketId).emit('crawl_start', { 
       domain, 
       status: 'started',
-      queueSize: queue.length
+      queueSize: crawler.queue.length
     });
   }
   
   try {
     // Main crawling loop
     while (queue.length > 0 && crawler.active && !crawler.cancelRequested) {
+      // CHECK CANCELLATION FIRST before any processing
+      if (crawler.cancelRequested) {
+        console.log(`Crawler for ${domain} was cancelled - exiting crawl loop`);
+        break;
+      }
+      
+      // Update heartbeat at the beginning of each loop iteration
+      crawlerHeartbeats.set(domain, Date.now());
+      
       // Check if we've reached the page limit
       if (!settings.indefiniteCrawling && crawlStats.totalPages >= settings.maxPages) {
         console.log(`[${domain}] Reached max pages limit (${settings.maxPages})`);
         break;
       }
       
-      const url = queue.shift();
+      const url = crawler.queue.shift();
       
       // Skip if already visited
-      if (visited.has(normalizeUrl(url))) {
+      if (crawler.visited.has(normalizeUrl(url))) {
         continue;
       }
       
       // Mark as visited
-      visited.add(normalizeUrl(url));
+      crawler.visited.add(normalizeUrl(url));
       crawlStats.totalPages++;
       
       // Log progress
@@ -127,23 +189,35 @@ async function crawlDomain(domain, options = {}, socketId = null, io = null) {
           domain,
           url,
           pagesVisited: crawlStats.totalPages,
-          productsFound: productLinks.size,
-          queueSize: queue.length
+          productsFound: crawler.productLinks.size,
+          queueSize: crawler.queue.length
         });
       }
       
       try {
+        // Double-check cancellation again before navigation
+        if (crawler.cancelRequested) {
+          console.log(`Crawler for ${domain} was cancelled before navigation`);
+          break;
+        }
+        
         // Navigate to the page with proper timeout
-        await page.goto(url, { 
+        await crawler.page.goto(url, { 
           waitUntil: settings.waitUntil || 'networkidle2',
           timeout: settings.navigationTimeout || 60000
         });
         
+        // Check cancellation a third time after navigation
+        if (crawler.cancelRequested) {
+          console.log(`Crawler for ${domain} was cancelled after navigation`);
+          break;
+        }
+        
         // First extract links from the current page before clicking "Show More"
-        const initialLinks = await extractLinks(page, domain);
+        const initialLinks = await extractLinks(crawler.page, domain);
         
         // Process initial links before clicking "Show More"
-        const newProductsFromInitialScan = processLinks(initialLinks, domain, visited, queue, productLinks);
+        const newProductsFromInitialScan = processLinks(initialLinks, domain, crawler.visited, crawler.queue, crawler.productLinks);
         if (newProductsFromInitialScan.length > 0) {
           console.log(`Found ${newProductsFromInitialScan.length} product links on initial scan`);
           
@@ -153,7 +227,7 @@ async function crawlDomain(domain, options = {}, socketId = null, io = null) {
               io.to(socketId).emit('product_found', {
                 domain,
                 url: productUrl,
-                count: productLinks.size
+                count: crawler.productLinks.size
               });
             }
           }
@@ -169,7 +243,7 @@ async function crawlDomain(domain, options = {}, socketId = null, io = null) {
           while (clickAttempts < maxClickAttempts) {
             try {
               // Check if button exists and is visible
-              const buttonVisible = await page.evaluate((selector, buttonText) => {
+              const buttonVisible = await crawler.page.evaluate((selector, buttonText) => {
                 const buttons = Array.from(document.querySelectorAll(selector));
                 const button = buttons.find(b => b.innerText.includes(buttonText));
                 
@@ -185,17 +259,17 @@ async function crawlDomain(domain, options = {}, socketId = null, io = null) {
               
               // Click the button
               console.log(`Clicking "Show More Products" button (attempt ${clickAttempts + 1})`);
-              await page.click(domainConfig.loadButtonClassName);
+              await crawler.page.click(domainConfig.loadButtonClassName);
               buttonClicked = true;
               clickAttempts++;
               
               // Wait for new content to load
-              await page.waitForTimeout(2000);
+              await crawler.page.waitForTimeout(2000);
               
               // Extract and process new links after each click
               if (buttonClicked) {
-                const newLinks = await extractLinks(page, domain);
-                const newProducts = processLinks(newLinks, domain, visited, queue, productLinks);
+                const newLinks = await extractLinks(crawler.page, domain);
+                const newProducts = processLinks(newLinks, domain, crawler.visited, crawler.queue, crawler.productLinks);
                 
                 if (newProducts.length > 0) {
                   console.log(`Found ${newProducts.length} new products after clicking "Show More"`);
@@ -206,7 +280,7 @@ async function crawlDomain(domain, options = {}, socketId = null, io = null) {
                       io.to(socketId).emit('product_found', {
                         domain,
                         url: productUrl,
-                        count: productLinks.size
+                        count: crawler.productLinks.size
                       });
                     }
                   }
@@ -219,6 +293,12 @@ async function crawlDomain(domain, options = {}, socketId = null, io = null) {
           }
         }
       } catch (err) {
+        // Check cancellation on error too
+        if (crawler.cancelRequested) {
+          console.log(`Crawler for ${domain} was cancelled during error handling`);
+          break;
+        }
+        
         console.error(`Error crawling ${url}: ${err.message}`);
         failedUrls.add(url);
       }
@@ -228,12 +308,12 @@ async function crawlDomain(domain, options = {}, socketId = null, io = null) {
     crawlStats.endTime = new Date();
     crawlStats.durationSeconds = (crawlStats.endTime - crawlStats.startTime) / 1000;
     crawlStats.crawlCompleted = !crawler.cancelRequested;
-    crawlStats.productsFound = productLinks.size;
+    crawlStats.productsFound = crawler.productLinks.size;
     
     const result = {
       domain,
-      products: Array.from(productLinks),
-      totalLinks: productLinks.size,
+      products: Array.from(crawler.productLinks),
+      totalLinks: crawler.productLinks.size,
       stats: crawlStats,
       timestamp: new Date().toISOString()
     };
@@ -252,12 +332,12 @@ async function crawlDomain(domain, options = {}, socketId = null, io = null) {
     if (io && socketId) {
       io.to(socketId).emit('crawl_complete', {
         domain,
-        productCount: productLinks.size,
+        productCount: crawler.productLinks.size,
         filePath: outputPath
       });
     }
     
-    console.log(`Crawling complete for ${domain}. Found ${productLinks.size} products.`);
+    console.log(`Crawling complete for ${domain}. Found ${crawler.productLinks.size} products.`);
     return result;
   } catch (err) {
     console.error(`Crawler error for ${domain}:`, err);
@@ -265,7 +345,14 @@ async function crawlDomain(domain, options = {}, socketId = null, io = null) {
   } finally {
     // Clean up
     crawler.active = false;
-    activeCrawlers.delete(domain);
+    clearInterval(heartbeatUpdater);
+    crawlerHeartbeats.delete(domain);
+    
+    // Only delete from activeCrawlers if we weren't already cancelled
+    // This prevents race conditions with the stopCrawler function
+    if (!crawler.cancelRequested) {
+      activeCrawlers.delete(domain);
+    }
     
     try {
       await browser.close();
@@ -358,18 +445,102 @@ async function stopCrawler(domain) {
     return { message: `No active crawler for ${domain}` };
   }
   
+  console.log(`Force stopping crawler for ${domain}`);
+  
+  // Set flags first to prevent further processing
   crawler.cancelRequested = true;
   crawler.active = false;
   
+  // Empty the queue immediately
+  if (crawler.queue) crawler.queue.length = 0;
+  
+  // Remove heartbeat monitoring
+  crawlerHeartbeats.delete(domain);
+  
+  // Create stop result FIRST to save progress before potentially crashing
+  const result = {
+    domain,
+    products: crawler.productLinks ? Array.from(crawler.productLinks) : [],
+    count: crawler.productLinks ? crawler.productLinks.size : 0,
+    timestamp: new Date().toISOString(),
+    status: 'stopped'
+  };
+  
   try {
-    await crawler.browser.close();
+    // If this crawler has a socket, notify it that stopping is in progress
+    if (crawler.io && crawler.socketId) {
+      try {
+        crawler.io.to(crawler.socketId).emit('crawl_stopping', {
+          domain,
+          message: 'Crawler is being terminated'
+        });
+      } catch (err) {
+        console.error(`Error sending stop notification: ${err.message}`);
+      }
+    }
+    
+    // Use a multiple-strategy approach to kill the browser
+    if (crawler.browser) {
+      // 1. Try normal browser close with short timeout first
+      try {
+        const closePromise = crawler.browser.close();
+        await Promise.race([
+          closePromise,
+          new Promise(r => setTimeout(r, 500))
+        ]);
+      } catch (err) {
+        console.warn(`Normal browser close failed: ${err.message}`);
+      }
+      
+      // 2. If browser has process, try to kill it directly
+      try {
+        const browserProcess = crawler.browser.process();
+        if (browserProcess && browserProcess.pid) {
+          const pid = browserProcess.pid;
+          console.log(`Force killing browser process PID: ${pid}`);
+          
+          if (process.platform === 'win32') {
+            try {
+              exec(`taskkill /pid ${pid} /T /F`, (error) => {
+                if (error) {
+                  console.error(`Process kill error: ${error.message}`);
+                }
+              });
+            } catch (killErr) {
+              console.error(`Failed to execute taskkill: ${killErr.message}`);
+            }
+          } else {
+            try {
+              process.kill(pid, 'SIGKILL');
+            } catch (killErr) {
+              console.error(`Failed to kill process: ${killErr.message}`);
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`Error accessing browser process: ${err.message}`);
+      }
+    }
   } catch (err) {
-    console.error(`Error closing browser for ${domain}:`, err);
+    console.error(`Error during stopCrawler: ${err.message}`);
+  } finally {
+    // Always make sure we remove from active crawlers
+    activeCrawlers.delete(domain);
+    
+    // Always notify the client if possible
+    if (crawler.io && crawler.socketId) {
+      crawler.io.to(crawler.socketId).emit('crawl_forcibly_stopped', {
+        domain,
+        message: 'Crawler has been forcibly terminated',
+        productCount: result.count
+      });
+    }
   }
   
-  activeCrawlers.delete(domain);
-  
-  return { message: `Stopped crawler for ${domain}` };
+  return { 
+    message: `Stopped crawler for ${domain}`, 
+    result 
+  };
 }
 
 /**
@@ -377,43 +548,45 @@ async function stopCrawler(domain) {
  */
 async function stopAllCrawlers() {
   const domains = Array.from(activeCrawlers.keys());
+  const savedResults = [];
   
-  for (const domain of domains) {
-    await stopCrawler(domain);
-  }
+  // Stop all crawlers in parallel for faster stopping
+  const stopPromises = domains.map(async domain => {
+    try {
+      const result = await stopCrawler(domain);
+      if (result && result.result) {
+        savedResults.push(result.result);
+      }
+    } catch (err) {
+      console.error(`Error stopping crawler for ${domain}:`, err.message);
+    }
+  });
   
-  return { message: `Stopped all crawlers (${domains.length})` };
+  // Wait for all stops to complete
+  await Promise.all(stopPromises);
+  
+  return savedResults;
 }
 
 /**
- * Get active crawler instance
+ * Get active crawler information
  */
 function getActiveCrawler(domain) {
-  return activeCrawlers.get(domain);
+  return activeCrawlers.get(domain) || null;
 }
 
 /**
- * Get crawl results (for API)
+ * Get crawl results for a domain
  */
 function getCrawlResults(domain) {
   const crawler = activeCrawlers.get(domain);
-  
-  if (!crawler) {
-    return null;
+  if (crawler && crawler.productLinks) {
+    return Array.from(crawler.productLinks);
   }
-  
-  return {
-    domain,
-    products: Array.from(crawler.productLinks),
-    stats: {
-      crawling: crawler.active,
-      pagesVisited: crawler.crawlStats.totalPages,
-      productsFound: crawler.productLinks.size,
-      queueSize: crawler.queue.length
-    }
-  };
+  return [];
 }
 
+// Create CommonJS exports that handle both direct and destructured imports
 module.exports = {
   crawlDomain,
   stopCrawler,
@@ -421,3 +594,6 @@ module.exports = {
   getActiveCrawler,
   getCrawlResults
 };
+
+// Export default for ESM compatibility
+module.exports.default = module.exports;

@@ -82,23 +82,105 @@ document.addEventListener('DOMContentLoaded', function() {
     socket.emit('stopCrawl');
     addLogEntry('Stopping all active crawls...', 'warning');
     statusText.textContent = 'Stopping...';
+    
+    // Add a fallback in case the server doesn't respond
+    const stopTimeout = setTimeout(() => {
+      // If we haven't received crawlStopped after 10 seconds, assume server issue
+      if (stopButton.disabled === false) {
+        addLogEntry('Server not responding to stop request. Resetting UI...', 'error');
+        updateUIForCrawling(false);
+        
+        // Try to reconnect
+        if (!socket.connected) {
+          socket.connect();
+        }
+      }
+    }, 10000);
+    
+    // Clear the timeout if we get a proper response
+    socket.once('crawlStopped', () => {
+      clearTimeout(stopTimeout);
+    });
   });
   
   // Download results
   downloadButton.addEventListener('click', function() {
-    if (resultFilePath) {
-      window.open(`/download?file=${encodeURIComponent(resultFilePath)}`, '_blank');
-    }
+    // Get selected domain if you have a domain selector
+    const selectedDomain = 'all'; // Default to all if no selector exists
+    
+    // Use the socket to request download
+    socket.emit('requestDownload', { domain: selectedDomain });
+    
+    addLogEntry('Downloading results...', 'info');
   });
+  
+  // Add connection status indicator
+  const connectionStatus = document.createElement('div');
+  connectionStatus.id = 'connection-status';
+  connectionStatus.className = 'connection-indicator';
+  connectionStatus.innerHTML = 'Disconnected';
+  connectionStatus.style.color = 'red';
+  document.querySelector('.control-panel').appendChild(connectionStatus);
+  
+  // Add a reconnect button
+  const reconnectButton = document.createElement('button');
+  reconnectButton.id = 'reconnect-button';
+  reconnectButton.className = 'btn btn-warning';
+  reconnectButton.innerHTML = 'Reconnect';
+  reconnectButton.style.display = 'none';
+  reconnectButton.addEventListener('click', function() {
+    socket.connect();
+  });
+  document.querySelector('.control-panel').appendChild(reconnectButton);
   
   // Socket.io event handlers
   socket.on('connect', () => {
+    connectionStatus.innerHTML = 'Connected';
+    connectionStatus.style.color = 'green';
+    reconnectButton.style.display = 'none';
     addLogEntry('Connected to server', 'info');
   });
   
   socket.on('disconnect', () => {
+    connectionStatus.innerHTML = 'Disconnected';
+    connectionStatus.style.color = 'red';
+    reconnectButton.style.display = 'inline-block';
     addLogEntry('Disconnected from server', 'error');
     updateUIForCrawling(false);
+    
+    // Automatically attempt to reconnect
+    setTimeout(() => {
+      if (!socket.connected) {
+        socket.connect();
+      }
+    }, 5000);
+  });
+  
+  socket.on('connect_error', (error) => {
+    connectionStatus.innerHTML = 'Connection Error';
+    connectionStatus.style.color = 'red';
+    reconnectButton.style.display = 'inline-block';
+    addLogEntry(`Connection error: ${error.message}`, 'error');
+  });
+  
+  // Listen for crawler-specific events
+  socket.on('crawl_stopping', (data) => {
+    addLogEntry(`${data.domain}: ${data.message}`, 'warning');
+  });
+  
+  socket.on('crawl_forcibly_stopped', (data) => {
+    addLogEntry(`${data.domain}: ${data.message}. Found ${data.productCount} products.`, 'warning');
+  });
+  
+  // Handle ping/pong for keeping connection alive during long crawls
+  setInterval(() => {
+    if (socket.connected && activeCrawls && Object.keys(activeCrawls).length > 0) {
+      socket.emit('ping');
+    }
+  }, 30000);
+  
+  socket.on('pong', () => {
+    console.log('Received pong from server');
   });
   
   socket.on('crawlUpdate', (data) => {
@@ -160,16 +242,14 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
   
+  // Update the crawlComplete handler to enable download button
   socket.on('crawlComplete', (results) => {
     addLogEntry('Crawling completed!', 'success');
     statusText.textContent = 'Crawling completed!';
     updateUIForCrawling(false);
     
-    // Set result file path for download
-    if (results.filePath) {
-      resultFilePath = results.filePath;
-      downloadButton.disabled = false;
-    }
+    // Enable download button
+    downloadButton.disabled = false;
     
     // Process results
     if (results) {
@@ -191,15 +271,34 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
   
+  // Add a handler for download ready events
+  socket.on('downloadReady', (data) => {
+    if (data.ready) {
+      downloadButton.disabled = false;
+      addLogEntry(data.message || 'Results are ready for download', 'success');
+    }
+  });
+  
+  // Add handler for download URL
+  socket.on('downloadUrl', (data) => {
+    if (data.url) {
+      window.open(data.url, '_blank');
+    }
+  });
+  
   socket.on('crawlError', (error) => {
     addLogEntry(`Error: ${error.message}`, 'error');
     // Don't stop the UI completely as other crawls might still be running
   });
   
+  // Handle crawl stopped event
   socket.on('crawlStopped', () => {
     addLogEntry('Crawling stopped', 'warning');
     statusText.textContent = 'Crawling stopped';
     updateUIForCrawling(false);
+    
+    // Enable download button when crawling stops
+    downloadButton.disabled = false;
   });
   
   // Helper functions
@@ -216,7 +315,7 @@ document.addEventListener('DOMContentLoaded', function() {
     progressBar.classList.remove('progress-indeterminate');
     statusText.textContent = 'Ready to crawl';
     progressStats.textContent = '';
-    downloadButton.disabled = true;
+    downloadButton.disabled = true; // Disable download button initially
   }
   
   function updateUIForCrawling(isCrawling) {
