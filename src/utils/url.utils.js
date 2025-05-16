@@ -1,24 +1,35 @@
-// Product URL patterns - Add more patterns for specific sites
+/**
+ * URL utility functions for E-commerce crawler
+ * 
+ * This module provides utility functions to detect and process URLs for the crawler.
+ * It contains patterns and functions to identify product pages, category pages, and
+ * exclude unwanted URLs.
+ * 
+ * Supported websites:
+ * - virgio.com
+ * - westside.com
+ * - tatacliq.com
+ * - nykaafashion.com
+ * 
+ * To add support for additional websites:
+ * 1. Extend the PRODUCT_PATTERNS array with the site's product URL patterns
+ * 2. Add site-specific logic to isProductUrl() function
+ * 3. Update getStartingPoints() if needed for new site structure
+ */
+
+// Product URL patterns - focused on supported sites
 const PRODUCT_PATTERNS = [
-  // Generic product patterns that work across most sites
-  /\/p\/[\w\d-]+/i,           // Common /p/ pattern (Nykaa, Ajio)
+  // Generic product patterns
+  /\/p\/[\w\d-]+/i,           // Common /p/ pattern (Nykaa)
   /\/products\/[\w\d-]+/i,     // /products/ pattern (Westside, Virgio)
   /\/product\/[\w\d-]+/i,      // /product/ pattern
   /\/p-mp[\w\d]+/i,            // TataCliq pattern
   /\/[^\/]+\/p-mp[\w\d]+/i,    // Alternative TataCliq pattern
   
-  // Site-specific patterns
-  /\/[\w\d-]+\/buy$/i,         // Myntra pattern: /numeric-id/buy
-  /\/[\w\d]+\/buy/i,           // Myntra alternative pattern
-  
-  // General common patterns
+  // Common patterns across e-commerce platforms
   /\/pdp\//i,                  // Product detail page
   /\/item\//i,                 // Item pattern
   /\/collections\/[^\/]+\/products\/[^\/]+$/i, // Shopify pattern
-  
-  // Additional helpful patterns
-  /\/[\d]+\/?$/i,              // Ends with numeric ID
-  /\/dp\//i,                   // Amazon style
   /\/product-detail\//i,       // Detail pattern
   /\/detail\//i                // Short detail pattern
 ];
@@ -28,11 +39,10 @@ const CATEGORY_PATTERNS = [
   /\/collections\//i,
   /\/c-/i,
   /\/c\//i,
-  /\/category\//i,
-  /\/(men|women|kids)(\/|$)/i
+  /\/category\//i
 ];
 
-// Exclude patterns
+// Exclude patterns - URLs we want to skip
 const EXCLUDE_PATTERNS = [
   /\.(jpg|jpeg|png|gif|css|js|ico|svg|webp|pdf)($|\?)/i,
   /\/(cart|checkout|login|register|account|track|help|search)/i,
@@ -43,8 +53,14 @@ const EXCLUDE_PATTERNS = [
 ];
 
 /**
- * Enhanced product URL validator that checks against known e-commerce patterns
- * Works with examples from TataCliq, Westside, NykaaFashion, Virgio, Ajio, and Myntra
+ * Identifies if a URL is a product page
+ * 
+ * @param {string} url - The URL to check
+ * @returns {boolean} - True if the URL is a product page
+ * 
+ * How to add support for a new website:
+ * 1. Add a new conditional block for your domain with specific patterns
+ * 2. Test with examples to ensure it correctly identifies product pages
  */
 function isProductUrl(url) {
   try {
@@ -63,71 +79,48 @@ function isProductUrl(url) {
       domain = match ? match[1] : '';
     }
     
-    // Complete URL pattern checks for each site type
+    // Site-specific checks for supported platforms
     
-    // 1. TataCliq: https://www.tatacliq.com/campus-mens-north-plus-dark-grey-running-shoes/p-mp000000008351719
+    // 1. TataCliq: https://www.tatacliq.com/product-name/p-mp000000008351719
     if (domain.includes('tatacliq.com')) {
       if (url.includes('/p-mp')) return true;
     }
     
-    // 2. Westside (Shopify): https://www.westside.com/products/hop-baby-light-taupe-high-rise-denim-shorts-301016143
+    // 2. Westside (Shopify): https://www.westside.com/products/product-name-301016143
     if (domain.includes('westside.com')) {
-      // Very specific check for Westside
       if (url.includes('/products/')) return true;
       if (url.match(/\/collections\/[^\/]+\/products\//i)) return true;
     }
     
-    // 3. NykaaFashion: https://www.nykaafashion.com/mabish-by-sonal-jain-pink-crop-top-with-draped-skirt-and-cape-set-of-3/p/18431713
+    // 3. NykaaFashion: https://www.nykaafashion.com/product-name/p/18431713
     if (domain.includes('nykaafashion.com')) {
       // Stricter checking for NykaaFashion - must have /p/ followed by numeric ID
       if (url.match(/\/p\/\d{5,}/)) return true;
     }
     
-    // 4. Virgio: https://www.virgio.com/products/boho-west-trucotton-peplum-waist-tie-front-top
+    // 4. Virgio: https://www.virgio.com/products/product-name
     if (domain.includes('virgio.com')) {
       if (url.includes('/products/')) return true;
       if (url.includes('/product/')) return true;
       if (url.includes('/product-detail/')) return true;
     }
     
-    // 5. Ajio: https://www.ajio.com/red-tape-men-quilted-regular-fit-puffer-jacket/p/700384757_olive
-    if (domain.includes('ajio.com')) {
-      if (url.includes('/p/')) return true;
-    }
-    
-    // 6. Myntra: https://www.myntra.com/handbags/caprese/caprese-animal-textured-faux-leather-structured-satchel-bag/30777604/buy
-    if (domain.includes('myntra.com')) {
-      if (url.endsWith('/buy') || url.includes('/buy?')) return true;
-    }
-    
     // Generic pattern checks (for all sites)
-    
-    // Check path segments for product indicators
     try {
       const pathname = new URL(url).pathname;
       
       // Fast pattern matching for common patterns
-      const productPatterns = [
-        /\/products\/[\w-]+/i,       // Shopify pattern
-        /\/product\/[\w-]+/i,         // Common pattern
-        /\/p\/[\w-]+\/?\d+/i,         // Pattern with ID
-        /\/p-mp[\w\d]+/i,             // TataCliq pattern
-        /\/[\w-]+\/p-mp[\w\d]+/i,     // TataCliq alternative
-        /\/[\d]+\/buy$/i,             // Myntra pattern
-        /\/product-detail\/[\w-]+/i   // Virgio pattern
-      ];
-      
-      for (const pattern of productPatterns) {
+      for (const pattern of PRODUCT_PATTERNS) {
         if (pattern.test(pathname)) return true;
       }
       
-      // Only check numeric ID if the URL doesn't have common category patterns
+      // Check numeric ID indicators (avoid false positives)
       if (!pathname.includes('/category/') && 
           !pathname.includes('/collection') && 
           !pathname.includes('/shop/') &&
           !pathname.includes('/search')) {
         
-        // Check numeric ID indicators (very reliable)
+        // Check for numeric ID patterns (common in product URLs)
         const segments = pathname.split('/').filter(Boolean);
         for (const segment of segments) {
           // If a segment is purely numeric with 5+ digits, probably a product ID
@@ -136,17 +129,6 @@ function isProductUrl(url) {
       }
     } catch (e) {
       // URL parsing failed, fall back to simpler checks
-    }
-    
-    // Check URL query parameters often used for products
-    try {
-      const urlObj = new URL(url);
-      const productParams = ['pid', 'productId', 'product_id', 'itemId', 'sku', 'variant'];
-      for (const param of productParams) {
-        if (urlObj.searchParams.has(param)) return true;
-      }
-    } catch (e) {
-      // URL parsing failed
     }
     
     // If nothing matched, it's probably not a product URL
@@ -159,6 +141,9 @@ function isProductUrl(url) {
 
 /**
  * Fast check if URL is a category page
+ * 
+ * @param {string} url - The URL to check
+ * @returns {boolean} - True if the URL is a category page
  */
 function isCategoryUrl(url) {
   try {
@@ -174,7 +159,10 @@ function isCategoryUrl(url) {
 }
 
 /**
- * Fast check if URL should be excluded
+ * Checks if a URL should be excluded from crawling
+ * 
+ * @param {string} url - The URL to check
+ * @returns {boolean} - True if the URL should be excluded
  */
 function shouldExcludeUrl(url) {
   if (isProductUrl(url)) return false;
@@ -186,7 +174,10 @@ function shouldExcludeUrl(url) {
 }
 
 /**
- * Optimized URL normalization
+ * Normalizes a URL by removing query parameters and fragments
+ * 
+ * @param {string} url - The URL to normalize
+ * @returns {string} - The normalized URL
  */
 function normalizeUrl(url) {
   try {
@@ -206,7 +197,10 @@ function normalizeUrl(url) {
 }
 
 /**
- * Get starting point for crawling
+ * Gets the starting points for crawling a domain
+ * 
+ * @param {string} domain - The domain to get starting points for
+ * @returns {string[]} - Array of starting URLs
  */
 function getStartingPoints(domain) {
   try {
@@ -237,7 +231,11 @@ function getStartingPoints(domain) {
 }
 
 /**
- * Optimized domain matching
+ * Checks if a URL belongs to the same domain as the base domain
+ * 
+ * @param {string} url - The URL to check
+ * @param {string} baseDomain - The base domain to check against
+ * @returns {boolean} - True if the URL belongs to the same domain
  */
 function isSameDomain(url, baseDomain) {
   try {
@@ -255,7 +253,10 @@ function isSameDomain(url, baseDomain) {
 }
 
 /**
- * Get normalized domain from URL
+ * Gets a normalized domain from a URL
+ * 
+ * @param {string} url - The URL to get the domain from
+ * @returns {string} - The normalized domain
  */
 function getNormalizedDomain(url) {
   try {
@@ -267,7 +268,7 @@ function getNormalizedDomain(url) {
   }
 }
 
-// Change from CommonJS to ES Module exports
+// Export functions
 export {
   isProductUrl,
   isCategoryUrl,

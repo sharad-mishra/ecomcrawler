@@ -16,8 +16,6 @@ document.addEventListener('DOMContentLoaded', function() {
   const noResults = document.getElementById('noResults');
   const productCounter = document.getElementById('productCounter');
   const downloadButton = document.getElementById('downloadButton');
-  const customDomain = document.getElementById('customDomain');
-  const customCheck = document.getElementById('custom');
   
   // Track state
   let activeCrawls = {};
@@ -29,27 +27,12 @@ document.addEventListener('DOMContentLoaded', function() {
     maxPages.disabled = this.checked;
   });
   
-  // Enable custom domain input only when its checkbox is checked
-  customCheck.addEventListener('change', function() {
-    customDomain.disabled = !this.checked;
-    if (this.checked) {
-      customDomain.focus();
-    }
-  });
-  customDomain.disabled = !customCheck.checked;
-  
   // Start crawling
   startButton.addEventListener('click', function() {
     // Get selected websites
     const selectedWebsites = [];
     document.querySelectorAll('input[name="websites"]:checked').forEach(checkbox => {
-      if (checkbox.value === 'custom') {
-        if (customDomain.value.trim()) {
-          selectedWebsites.push(customDomain.value.trim());
-        }
-      } else {
-        selectedWebsites.push(checkbox.value);
-      }
+      selectedWebsites.push(checkbox.value);
     });
     
     if (selectedWebsites.length === 0) {
@@ -339,50 +322,48 @@ document.addEventListener('DOMContentLoaded', function() {
   }
   
   /**
-   * Enhanced version of updateUIForCrawling to manage progress bar
+   * Start the progress bar animation
    */
-  function updateUIForCrawling(isCrawling) {
-    startButton.disabled = isCrawling;
-    stopButton.disabled = !isCrawling;
-    indefiniteCrawl.disabled = isCrawling;
-    maxPages.disabled = isCrawling || indefiniteCrawl.checked;
-    maxScrolls.disabled = isCrawling;
-    document.querySelectorAll('input[name="websites"]').forEach(cb => {
-      cb.disabled = isCrawling;
-    });
-    customDomain.disabled = isCrawling || !customCheck.checked;
+  function startProgressAnimation() {
+    const progressContainer = progressBar.parentElement;
+    progressContainer.classList.add('progress-animated');
     
-    // Status container animation
-    const statusContainer = document.querySelector('.status-container');
-    
-    if (isCrawling) {
-      // Add animation class to status container
-      statusContainer.classList.add('crawling-active');
-      
-      // For indefinite crawl, use indeterminate animation
-      if (indefiniteCrawl.checked) {
-        progressBar.parentElement.classList.add('progress-indeterminate');
-      } else {
-        // For definite crawl, start at 0%
-        progressBar.parentElement.classList.remove('progress-indeterminate');
-        progressBar.style.width = '0%';
-      }
-      
-      statusText.textContent = 'Crawling in progress...';
+    if (indefiniteCrawl.checked) {
+      progressContainer.classList.add('progress-indeterminate');
     } else {
-      // Remove animations when finished
-      statusContainer.classList.remove('crawling-active');
-      progressBar.parentElement.classList.remove('progress-indeterminate');
-      
-      // If completed successfully, set to 100%
-      if (statusText.textContent.includes('completed') || 
-          statusText.textContent.includes('Finished')) {
-        progressBar.style.width = '100%';
-      }
+      progressContainer.classList.remove('progress-indeterminate');
+      progressBar.style.width = '0%';
+    }
+    
+    // Add crawling active class to parent for additional effects
+    const statusContainer = document.querySelector('.status-container');
+    if (statusContainer) {
+      statusContainer.classList.add('crawling-active');
     }
   }
   
-  // Enhanced resetUI function
+  /**
+   * Stop the progress bar animation
+   * @param {boolean} completed - Whether crawling completed successfully
+   */
+  function stopProgressAnimation(completed = false) {
+    const progressContainer = progressBar.parentElement;
+    progressContainer.classList.remove('progress-animated');
+    progressContainer.classList.remove('progress-indeterminate');
+    
+    // Set to 100% if completed successfully
+    if (completed) {
+      progressBar.style.width = '100%';
+    }
+    
+    // Remove active class from container
+    const statusContainer = document.querySelector('.status-container');
+    if (statusContainer) {
+      statusContainer.classList.remove('crawling-active');
+    }
+  }
+  
+  // Helper functions
   function resetUI() {
     activeCrawls = {};
     productUrls = new Set();
@@ -404,7 +385,25 @@ document.addEventListener('DOMContentLoaded', function() {
     downloadButton.disabled = true;
   }
   
-  // Helper functions
+  function updateUIForCrawling(isCrawling) {
+    startButton.disabled = isCrawling;
+    stopButton.disabled = !isCrawling;
+    indefiniteCrawl.disabled = isCrawling;
+    maxPages.disabled = isCrawling || indefiniteCrawl.checked;
+    maxScrolls.disabled = isCrawling;
+    document.querySelectorAll('input[name="websites"]').forEach(cb => {
+      cb.disabled = isCrawling;
+    });
+    
+    // Handle progress bar animation
+    if (isCrawling) {
+      startProgressAnimation();
+      statusText.textContent = 'Crawling in progress...';
+    } else {
+      stopProgressAnimation();
+    }
+  }
+  
   function addLogEntry(message, type = 'info') {
     const entry = document.createElement('div');
     entry.className = `log-entry log-${type}`;

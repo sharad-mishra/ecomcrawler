@@ -1,3 +1,22 @@
+/**
+ * E-commerce Product URL Crawler
+ * 
+ * This module provides functionality to crawl e-commerce websites and extract product URLs.
+ * It uses Puppeteer with Stealth mode to avoid bot detection and implements various
+ * site-specific handlers for better crawling results.
+ * 
+ * Supported websites:
+ * - virgio.com
+ * - westside.com
+ * - tatacliq.com
+ * - nykaafashion.com
+ * 
+ * To add support for additional websites:
+ * 1. Add site-specific handlers in this file similar to handleVirgioLinks()
+ * 2. Add corresponding patterns in the url.utils.js file
+ * 3. Configure the new site in the config file
+ */
+
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import fs from 'fs';
@@ -24,6 +43,14 @@ if (!fs.existsSync(outputDir)) {
 
 /**
  * Start the crawling process
+ * 
+ * @param {Object} options - Crawling options
+ * @param {string[]} options.domains - Array of domains to crawl
+ * @param {Function} options.onUpdate - Callback for status updates
+ * @param {Function} options.onComplete - Callback when crawling completes
+ * @param {Function} options.onError - Callback for errors
+ * @param {Function} options.onProductFound - Callback when a product URL is found
+ * @returns {Object} - Crawl process object with stop method
  */
 export async function startCrawling({ domains, onUpdate, onComplete, onError, onProductFound }) {
   // Add a global cancellation flag
@@ -128,7 +155,6 @@ export async function startCrawling({ domains, onUpdate, onComplete, onError, on
       domainName: domain
     }));
 
-    // Store browser reference for cleanup
     // Start crawling in parallel
     const results = await Promise.allSettled(
       domainsConfig.map(domainInfo => 
@@ -198,6 +224,11 @@ export async function startCrawling({ domains, onUpdate, onComplete, onError, on
 
 /**
  * Crawl a single site/domain
+ * 
+ * @param {Object} domainInfo - Domain configuration
+ * @param {Function} onUpdate - Callback for status updates
+ * @param {Function} onProductFound - Callback when a product URL is found
+ * @returns {Object} - Results of the crawl
  */
 async function crawlSite(domainInfo, onUpdate, onProductFound) {
   const { domainName, loadButtonClassName, loadButtonInnerText, maxCrawlTime, startTime } = domainInfo;
@@ -566,6 +597,9 @@ async function crawlSite(domainInfo, onUpdate, onProductFound) {
 
 /**
  * Detect the type of page we're on
+ * 
+ * @param {Object} page - Puppeteer page object
+ * @returns {string} - Page type: 'productList', 'category', or 'general'
  */
 async function detectPageType(page) {
   return await page.evaluate(() => {
@@ -606,7 +640,12 @@ async function detectPageType(page) {
 }
 
 /**
- * Add this function to validate product URLs
+ * Validate if a URL is a legitimate product URL
+ * 
+ * @param {Object} page - Puppeteer page object
+ * @param {string} url - URL to validate
+ * @param {string} domain - Domain of the site
+ * @returns {boolean} - True if URL is a valid product URL
  */
 async function validateProductUrl(page, url, domain) {
   try {
@@ -622,7 +661,12 @@ async function validateProductUrl(page, url, domain) {
 }
 
 /**
- * Helper function to scroll a page
+ * Helper function to scroll a page to load dynamic content
+ * 
+ * @param {Object} page - Puppeteer page object
+ * @param {string} domain - Domain of the site
+ * @param {Function} onUpdate - Callback for status updates
+ * @returns {boolean} - True if scrolling was successful
  */
 async function scrollPage(page, domain, onUpdate) {
   try {
@@ -668,7 +712,10 @@ async function scrollPage(page, domain, onUpdate) {
 }
 
 /**
- * Validate NykaaFashion product URLs
+ * Validate NykaaFashion product URLs with specific pattern checking
+ * 
+ * @param {string} url - URL to validate
+ * @returns {boolean} - True if URL is a valid NykaaFashion product URL
  */
 function validateNykaaFashionProductUrl(url) {
   try {
@@ -689,7 +736,10 @@ function validateNykaaFashionProductUrl(url) {
 }
 
 /**
- * Special handler for Virgio pages
+ * Special handler for Virgio pages to extract links
+ * 
+ * @param {Object} page - Puppeteer page object
+ * @returns {string[]} - Array of extracted links
  */
 async function handleVirgioLinks(page) {
   // First make sure we're actually on the Virgio site
@@ -735,7 +785,10 @@ async function handleVirgioLinks(page) {
 }
 
 /**
- * Special handler for Westside (Shopify) pages
+ * Special handler for Westside (Shopify) pages to extract links
+ * 
+ * @param {Object} page - Puppeteer page object
+ * @returns {string[]} - Array of extracted links
  */
 async function handleWestsideLinks(page) {
   // First make sure we're actually on the Westside site
@@ -781,6 +834,9 @@ async function handleWestsideLinks(page) {
 
 /**
  * Special function for NykaaFashion links extraction
+ * 
+ * @param {Object} page - Puppeteer page object
+ * @returns {string[]} - Array of extracted links
  */
 async function extractNykaaFashionLinks(page) {
   return await page.evaluate(() => {
@@ -814,6 +870,9 @@ async function extractNykaaFashionLinks(page) {
 
 /**
  * Extract product links from a grid layout with site-specific enhancements
+ * 
+ * @param {Object} page - Puppeteer page object
+ * @returns {string[]} - Array of product links
  */
 async function extractProductLinksFromGrid(page) {
   const url = await page.url();
@@ -890,6 +949,9 @@ async function extractProductLinksFromGrid(page) {
 
 /**
  * Extract standard links from a page (all links)
+ * 
+ * @param {Object} page - Puppeteer page object
+ * @returns {string[]} - Array of links
  */
 async function extractStandardLinks(page) {
   return await page.evaluate(() => {
@@ -901,6 +963,9 @@ async function extractStandardLinks(page) {
 
 /**
  * Extract category links from a page
+ * 
+ * @param {Object} page - Puppeteer page object
+ * @returns {string[]} - Array of category links
  */
 async function extractCategoryLinks(page) {
   return await page.evaluate(() => {
@@ -928,6 +993,11 @@ async function extractCategoryLinks(page) {
 
 /**
  * Handle product listing page - scroll to load more products
+ * 
+ * @param {Object} page - Puppeteer page object
+ * @param {string} domain - Domain of the site
+ * @param {Function} onUpdate - Callback for status updates
+ * @returns {boolean} - True if handling was successful
  */
 async function handleProductListPage(page, domain, onUpdate) {
   // Simply use the existing scrollPage function
@@ -937,6 +1007,11 @@ async function handleProductListPage(page, domain, onUpdate) {
 
 /**
  * Handle category page - scroll and look for subcategories
+ * 
+ * @param {Object} page - Puppeteer page object
+ * @param {string} domain - Domain of the site
+ * @param {Function} onUpdate - Callback for status updates
+ * @returns {boolean} - True if handling was successful
  */
 async function handleCategoryPage(page, domain, onUpdate) {
   // Simply use the existing scrollPage function
