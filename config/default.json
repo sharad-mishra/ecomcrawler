@@ -1,5 +1,5 @@
 {
-  "outputDir": "./crawled-data",
+  "outputDir": "./output",
   "browserOptions": {
     "headless": "new",
     "defaultTimeout": 60000,
@@ -17,46 +17,49 @@
     {
       "domainName": "https://www.tatacliq.com/",
       "loadButtonClassName": ".ShowMoreButtonPlp__button",
-      "loadButtonInnerText": "Show More Products",
-      "navigationTimeout": 120000,
-      "waitUntil": "networkidle2",
-      "excludePaths": [
-        "/my-account/",
-        "/gift-cards",
-        "/corporate-gift-card"
-      ],
-      "categoryUrls": [
-        "https://www.tatacliq.com/women's-clothing/c-msh10/",
-        "https://www.tatacliq.com/mens-clothing/c-msh11/",
-        "https://www.tatacliq.com/women-bags/c-msh1600",
-        "https://www.tatacliq.com/footwear/c-msh13/",
-        "https://www.tatacliq.com/kids/c-msh21/",
-        "https://www.tatacliq.com/jewellery/c-msh20/",
-        "https://www.tatacliq.com/beauty-&-grooming/c-msh25/",
-        "https://www.tatacliq.com/home/c-msh22/",
-        "https://www.tatacliq.com/electronics/c-msh12",
-        "https://www.tatacliq.com/search/page-1?q=watches"
-      ],
-      "sampleProductUrls": [
-        "https://www.tatacliq.com/lov-by-westside-brown-high-rise-trousers/p-mp000000026071280",
-        "https://www.tatacliq.com/kapoor-lamp-shades-transparent-white-glass-mystic-cotton-shade-table-lamp/p-mp000000020053259",
-        "https://www.tatacliq.com/guess-analog-rose-gold-dial-womens-watch-gw0302l3/p-mp000000019270291"
-      ]
+      "loadButtonInnerText": "Show More Products"
     },
     {
-      "domainName": "https://www.virgio.com/",
-      "excludePaths": []
+      "domainName": "https://www.virgio.com/"
     },
     {
       "domainName": "https://www.nykaafashion.com/",
-      "excludePaths": []
+      "loadButtonClassName": ".css-1q7tqyw, button[data-at*='load_more']",
+      "loadButtonInnerText": "Load More",
+      "navigationTimeout": 45000,
+      "waitUntil": "networkidle2",
+      "excludePaths": [
+        "/wishlist",
+        "/my-account",
+        "/my-orders",
+        "/checkout",
+        "/cart",
+        "/login",
+        "/register"
+      ],
+      "categoryUrls": [
+        "https://www.nykaafashion.com/women/c/6557",
+        "https://www.nykaafashion.com/men/c/6823",
+        "https://www.nykaafashion.com/kids/c/6266",
+        "https://www.nykaafashion.com/best-sellers/c/10056",
+        "https://www.nykaafashion.com/trending-now/c/10057",
+        "https://www.nykaafashion.com/new-arrivals/c/14240",
+        "https://www.nykaafashion.com/ethnic-wear/c/10046",
+        "https://www.nykaafashion.com/kurta-sets/c/10047",
+        "https://www.nykaafashion.com/top-brands/c/14275"
+      ],
+      "sampleProductUrls": [
+        "https://www.nykaafashion.com/house-of-jamoti-pikes-spades-cotton-kurta-with-pant-and-inner-set-of-3/p/17677041",
+        "https://www.nykaafashion.com/house-of-jamoti-tiles-diamonds-cotton-kurta-with-pant-and-inner-set-of-3/p/17677043?intcmp=widget,similar_products&ppid=17677041"
+      ]
     },
     {
-      "domainName": "https://www.westside.com/",
-      "excludePaths": []
+      "domainName": "https://www.westside.com/"
     }
   ],
   "concurrencyLimit": 4,
   "productFileName": "product-links.json",
-  "failedUrlsFileName": "failed-urls.json"
+  "failedUrlsFileName": "failed-urls.json",
+  "maxPages": 1000,
+  "maxPagesWithNoNewProducts": 50
 }

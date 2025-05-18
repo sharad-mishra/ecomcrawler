@@ -54,11 +54,15 @@ const PAGINATION_PATTERNS = [
   /\/pages\/(\d+)/i,
 ];
 
-// Specific patterns for Nykaa Fashion
+// Specific patterns for Nykaa Fashion - Enhanced with new patterns
 const NYKAA_PATTERNS = [
-  /\/[^\/]+\/p\/\d{5,}/i,   // Standard Nykaa product URL
-  /\/brands\/[^\/]+\/p\/\d+/i, // Brand product URL
-  /\/[^\/]+\/c\/\d+\/p\/\d+/i, // Category-based product URL
+  /\/[^\/]+\/p\/\d{5,}($|\?)/i,   // Standard Nykaa product URL like /product-name/p/12345678
+  /\/brands\/[^\/]+\/p\/\d+/i,     // Brand product URL
+  /\/[^\/]+\/c\/\d+\/p\/\d+/i,     // Category-based product URL
+  /\/p\/\d{7,8}($|\?)/i,           // Direct product ID format
+  /\/products\/[^\/]+\/\d+/i,      // Products specific format
+  /\/plp\/[^\/]+\/\d+/i,           // PLP format
+  /\/shopping\/[^\/]+\/p\/\d+/i,   // Shopping section format
 ];
 
 // Add Westside-specific product patterns
@@ -100,17 +104,35 @@ function isProductUrl(url) {
       domain = match ? match[1] : '';
     }
     
-    // NykaaFashion specific check
+    // NykaaFashion specific check - ENHANCED
     if (domain.includes('nykaafashion.com')) {
       // Do not match category URLs with /c/ pattern
-      if (url.includes('/c/')) {
+      if (url.includes('/c/') && !url.includes('/p/')) {
         return false;
+      }
+      
+      // Check all NykaaFashion patterns
+      for (const pattern of NYKAA_PATTERNS) {
+        if (pattern.test(url)) {
+          return true;
+        }
       }
       
       // Strict check for NykaaFashion product URLs
       // Must have: /product-name/p/12345 pattern
       const nykaaProductPattern = /\/[^\/]+\/p\/\d{5,}($|\?)/i;
       if (nykaaProductPattern.test(url)) {
+        return true;
+      }
+      
+      // Check for intcmp parameter which is often in product pages
+      if (url.includes('/p/') && url.includes('intcmp=')) {
+        return true;
+      }
+      
+      // Check for product-specific parameters
+      const urlObj = new URL(url);
+      if (urlObj.searchParams.has('ppid') || urlObj.searchParams.has('productId')) {
         return true;
       }
       
@@ -288,7 +310,12 @@ function getStartingPoints(domain) {
       'https://www.nykaafashion.com/women/c/6557',
       'https://www.nykaafashion.com/men/c/6823',
       'https://www.nykaafashion.com/kids/c/6266',
-      'https://www.nykaafashion.com/best-sellers/c/10056'
+      'https://www.nykaafashion.com/best-sellers/c/10056',
+      'https://www.nykaafashion.com/trending-now/c/10057',
+      'https://www.nykaafashion.com/new-arrivals/c/14240',
+      'https://www.nykaafashion.com/ethnic-wear/c/10046',
+      'https://www.nykaafashion.com/kurta-sets/c/10047',
+      'https://www.nykaafashion.com/top-brands/c/14275'
     ];
   }
   
@@ -394,6 +421,43 @@ function enhancedProductUrlValidation(url, domain) {
   }
 }
 
+/**
+ * Specialized function for validating NykaaFashion product URLs
+ * @param {string} url - URL to check
+ * @returns {boolean} - True if it's a valid product URL
+ */
+function isNykaaFashionProductUrl(url) {
+  if (!url || !url.includes('nykaafashion.com')) return false;
+  
+  try {
+    // The most definitive pattern for NykaaFashion product URLs
+    const mainPattern = /\/[^\/]+\/p\/\d{5,}($|\?)/i;
+    if (mainPattern.test(url)) return true;
+    
+    // Secondary patterns
+    const secondaryPatterns = [
+      /\/p\/\d{7,8}($|\?)/i,
+      /\/brands\/[^\/]+\/p\/\d+/i
+    ];
+    
+    for (const pattern of secondaryPatterns) {
+      if (pattern.test(url)) return true;
+    }
+    
+    // Check for product-specific parameters
+    const urlObj = new URL(url);
+    if (urlObj.searchParams.has('ppid') || 
+        urlObj.searchParams.has('productId') ||
+        (urlObj.searchParams.has('intcmp') && url.includes('/p/'))) {
+      return true;
+    }
+    
+    return false;
+  } catch (error) {
+    return false;
+  }
+}
+
 // Export functions
 export {
   isProductUrl,
@@ -403,10 +467,12 @@ export {
   getStartingPoints,
   isSameDomain,
   enhancedProductUrlValidation,
+  isNykaaFashionProductUrl, // Export the new specialized function
   PRODUCT_PATTERNS,
   CATEGORY_PATTERNS,
   EXCLUDE_PATTERNS,
   PAGINATION_PATTERNS,
   WESTSIDE_PRODUCT_PATTERNS,
-  TATACLIQ_PRODUCT_PATTERNS  // Export the TataCliq patterns
+  TATACLIQ_PRODUCT_PATTERNS,
+  NYKAA_PATTERNS // Export the NykaaFashion patterns
 };
