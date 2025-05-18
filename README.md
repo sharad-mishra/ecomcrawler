@@ -1,98 +1,56 @@
 # 🕸️ E-Commerce Product URL Crawler
 
-This project is a scalable and stealthy web crawler designed to extract product page URLs from e-commerce websites. It is built using Puppeteer with the Stealth plugin to evade bot detection and supports crawling multiple domains concurrently with customizable crawling logic.
+A scalable and stealthy web crawler designed to extract product page URLs from e-commerce websites. Built using Puppeteer with Stealth mode to evade bot detection.
 
-## ✨ Features
+## ✨ Key Features
 
-- **Stealth Mode**: Uses puppeteer-extra with Stealth plugin to avoid bot detection
-- **Multiple Domains**: Crawl multiple e-commerce sites concurrently
-- **Site-Specific Handling**: Custom logic for different e-commerce platforms
-- **Real-time Updates**: Web UI with Socket.io for real-time crawling status
-- **Configurable**: Adjust crawling parameters through UI or config files
-- **Progress Tracking**: Visual progress bar and detailed logs
-- **Result Management**: Download results in CSV format
+- **Stealth Mode**: Avoids bot detection using puppeteer-extra with Stealth plugin
+- **Multi-domain Crawling**: Crawl multiple e-commerce sites concurrently  
+- **Site-specific Optimization**: Custom logic for different platforms
+- **Real-time Updates**: Web UI with Socket.io for live crawling status
+- **Fastify Backend**: High-performance REST API using Fastify instead of Express
+- **Intelligent Detection**: Automatically detects product pages, categories, and lazy loading
 
-## 🧠 How It Works
+## 🔧 Currently Supported Sites
 
-The crawler uses a **breadth-first search (BFS)** approach to traverse all internal pages of an e-commerce website. For each visited page, it extracts all internal links and identifies product pages using pattern matching and site-specific logic.
+- Westside (westside.com)
+- TataCliq (tatacliq.com)
+- NykaaFashion (nykaafashion.com)
+- Virgio (virgio.com)
 
-### 🔍 Crawling Strategy
+## 🚀 Future Enhancements
 
-1. **Start with domain URLs** configured in the system
-2. **Launch a stealth Puppeteer browser** instance to avoid detection
-3. **Queue internal links** and iterate over them while maintaining a set of visited URLs
-4. For each page:
-   - Visit the URL with Puppeteer
-   - Detect and handle **lazy loading** by scrolling the page
-   - Click **"Load More"** buttons when present
-   - Extract links using site-specific handlers
-   - Filter links using pattern matching to identify product URLs
-5. **Output results** to JSON files and provide CSV download option
+- **Domain Expansion**: Add support for more e-commerce sites with simple configuration
+- **Enhanced UI**: More interactive dashboard with filtering and visualization options
+- **Product Data Extraction**: Expand to extract product details beyond just URLs
+- **Headless Mode Toggle**: Option to run with/without visible browser
+- **Distributed Crawling**: Support for multi-node distributed crawling
+- **Data Export Options**: Additional export formats beyond CSV
 
-## 🔧 Supported Websites
-
-The crawler is specifically optimized for:
-
-- **Virgio** (virgio.com)
-- **Westside** (westside.com)
-- **TataCliq** (tatacliq.com)
-- **NykaaFashion** (nykaafashion.com)
-
-## 🚀 Adding Support for New Websites
-
-To add support for additional e-commerce websites:
-
-1. **Update URL patterns** in `src/utils/url.utils.js`:
-   - Add new patterns to `PRODUCT_PATTERNS`
-   - Add site-specific logic to `isProductUrl()`
-
-2. **Create a site-specific handler** in `src/crawler.js`:
-   - Create a function like `handleXYZLinks(page)`
-   - Add detection logic in the crawlSite function
-
-3. **Add domain configuration** in `config/default.json`:
-   - Add a new entry to the `domainsConfig` array
-   - Configure any site-specific parameters
-
-## 📦 Installation
+## 📦 Quick Start
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/ecom-crawler.git
-cd ecom-crawler
-
 # Install dependencies
 npm install
 
 # Start the application
 npm start
+
+# Access the web interface
+# Open http://localhost:3000 in your browser
 ```
+
+## 🛠️ Adding New Domains
+
+To add support for additional e-commerce websites:
+
+1. Update URL patterns in `src/utils/url.utils.js`
+2. Create a site-specific handler in `src/crawler.js` if needed
+3. Add domain configuration in `config/default.json`
 
 ## 📊 Usage
 
-1. Open the web interface at `http://localhost:3000`
-2. Select the websites you want to crawl
-3. Configure crawling options (max pages, scroll attempts)
-4. Click "Start Crawling" and monitor progress in real-time
-5. When complete, download results as CSV
-
-## 🛠 Configuration
-
-Key configuration options in `config/default.json`:
-
-- `outputDir`: Directory for saving results
-- `browserOptions`: Puppeteer browser configuration
-- `maxScrollAttempts`: Maximum scroll attempts for lazy-loaded content
-- `concurrencyLimit`: Number of concurrent browser instances
-- `domainsConfig`: Site-specific configurations
-
-## 📂 Output
-
-Results are saved to:
-
-- `crawled-data/product-links.json` — Map of domains to product URLs
-- `crawled-data/failed-urls.json` — URLs that failed during crawling
-
-## 📋 License
-
-This project is licensed under the MIT License.
+1. Select websites to crawl from the web interface
+2. Configure crawling options
+3. Track progress in real-time
+4. Download results as CSV when complete
