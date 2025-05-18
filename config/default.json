@@ -1,5 +1,5 @@
 {
-  "outputDir": "./output",
+  "outputDir": "./crawled-data",
   "browserOptions": {
     "headless": "new",
     "defaultTimeout": 60000,

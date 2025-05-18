@@ -294,13 +294,14 @@ document.addEventListener('DOMContentLoaded', function() {
   function updateProgressStats() {
     // Calculate total stats across all domains
     const totalStats = Object.values(activeCrawls).reduce((acc, curr) => {
-      acc.pagesVisited += curr.pagesVisited || 0;
-      acc.productsFound += curr.productsFound || 0;
-      return acc;
+      return {
+        pagesVisited: acc.pagesVisited + (curr.pagesVisited || 0),
+        productsFound: acc.productsFound + (curr.productsFound || 0)
+      };
     }, { pagesVisited: 0, productsFound: 0 });
     
-    // Update the progress stats text
-    progressStats.textContent = `${totalStats.pagesVisited} pages visited, ${totalStats.productsFound} products found`;
+    // Update the progress stats text - MODIFIED to show only product count
+    progressStats.textContent = `${totalStats.productsFound} products found`;
     
     // Calculate progress percentage if we have a maximum pages value
     if (!indefiniteCrawl.checked) {

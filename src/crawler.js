@@ -718,8 +718,189 @@ async function scrollPage(page, domain, onUpdate) {
 }
 
 /**
+ * Extract standard links from a page (all links)
+ * 
+ * @param {Object} page - Puppeteer page object
+ * @returns {string[]} - Array of links
+ */
+async function extractStandardLinks(page) {
+  return await page.evaluate(() => {
+    return Array.from(document.querySelectorAll('a[href]'))
+      .map(a => a.href)
+      .filter(href => href && href.startsWith('http'));
+  });
+}
+
+/**
+ * Extract category links from a page
+ * 
+ * @param {Object} page - Puppeteer page object
+ * @returns {string[]} - Array of category links
+ */
+async function extractCategoryLinks(page) {
+  return await page.evaluate(() => {
+    const links = new Set();
+    
+    // Category section links
+    document.querySelectorAll('.category-section a, [class*="category"] a, .collections a, .departments a').forEach(a => {
+      if (a.href && a.href.startsWith('http')) {
+        links.add(a.href);
+      }
+    });
+    
+    // If we didn't find many specific links, get all links from the page
+    if (links.size < 5) {
+      document.querySelectorAll('a[href]').forEach(a => {
+        if (a.href && a.href.startsWith('http')) {
+          links.add(a.href);
+        }
+      });
+    }
+    
+    return Array.from(links);
+  });
+}
+
+/**
+ * Extract product links from a grid layout with site-specific enhancements
+ * 
+ * @param {Object} page - Puppeteer page object
+ * @returns {string[]} - Array of product links
+ */
+async function extractProductLinksFromGrid(page) {
+  const url = await page.url();
+  const domain = new URL(url).hostname;
+  
+  // Site-specific selectors based on domain
+  const additionalSelectors = [];
+  
+  if (domain.includes('westside.com')) {
+    additionalSelectors.push(
+      // Westside specific selectors
+      '.grid__item',
+      '.grid-product__content',
+      '.product-card',
+      '.product-item',
+      'a[href*="/products/"]'
+    );
+  } else if (domain.includes('virgio.com')) {
+    additionalSelectors.push(
+      // Virgio specific selectors
+      '.product-item', 
+      '.product-card',
+      '.item-container',
+      'a[href*="/products/"]'
+    );
+  }
+  
+  const productLinks = await page.evaluate((additionalSelectors) => {
+    const links = new Set();
+    
+    // 1. Direct product link check - most reliable
+    [
+      'a[href*="/products/"]',
+      'a[href*="/product/"]',
+      'a[href*="/p/"]',
+      'a[href*="/p-mp"]',
+      'a[href$="/buy"]'
+    ].forEach(selector => {
+      document.querySelectorAll(selector).forEach(el => {
+        if (el.href && el.href.includes('http')) {
+          links.add(el.href);
+        }
+      });
+    });
+    
+    // 2. Check product cards with site-specific selectors
+    const allSelectors = [
+      '.product-card', 
+      '.product-item', 
+      '.product-tile', 
+      '.grid-view-item',
+      '[class*="product-card"]',
+      '[class*="productCard"]', 
+      ...additionalSelectors
+    ];
+    
+    allSelectors.forEach(selector => {
+      const cards = document.querySelectorAll(selector);
+      cards.forEach(card => {
+        const anchors = card.querySelectorAll('a[href]');
+        anchors.forEach(a => {
+          if (a.href && a.href.includes('http')) {
+            links.add(a.href);
+          }
+        });
+      });
+    });
+    
+    return Array.from(links);
+  }, additionalSelectors);
+  
+  return productLinks;
+}
+
+/**
+ * Handle product listing page - scroll to load more products
+ * 
+ * @param {Object} page - Puppeteer page object
+ * @param {string} domain - Domain of the site
+ * @param {Function} onUpdate - Callback for status updates
+ * @returns {boolean} - True if handling was successful
+ */
+async function handleProductListPage(page, domain, onUpdate) {
+  try {
+    if (onUpdate) onUpdate({ 
+      domain, 
+      status: `Scrolling product listing page to load more products`,
+      type: 'info' 
+    });
+    
+    // Simply use the existing scrollPage function for standard pages
+    await scrollPage(page, domain, onUpdate);
+    
+    // For NykaaFashion, try to find and click any "Load More" buttons
+    if (domain.includes('nykaafashion.com')) {
+      await tryClickLoadMoreButton(page, '.css-1q7tqyw, button[data-at*="load_more"]');
+    }
+    
+    return true;
+  } catch (error) {
+    console.error(`Error handling product list page: ${error.message}`);
+    return false;
+  }
+}
+
+/**
+ * Handle category page - scroll and look for subcategories
+ * 
+ * @param {Object} page - Puppeteer page object
+ * @param {string} domain - Domain of the site
+ * @param {Function} onUpdate - Callback for status updates
+ * @returns {boolean} - True if handling was successful
+ */
+async function handleCategoryPage(page, domain, onUpdate) {
+  try {
+    if (onUpdate) onUpdate({ 
+      domain, 
+      status: `Handling category page`,
+      type: 'info' 
+    });
+    
+    // For category pages, we just need to scroll to make sure all links are loaded
+    await scrollPage(page, domain, onUpdate);
+    
+    return true;
+  } catch (error) {
+    console.error(`Error handling category page: ${error.message}`);
+    return false;
+  }
+}
+
+/**
  * Specialized scrolling function for NykaaFashion pages
  * They often load content dynamically on scroll and have "Load More" buttons
+ * Fixed to avoid document is not defined errors
  */
 async function scrollNykaaFashionPage(page, domain, onUpdate) {
   if (onUpdate) onUpdate({ 
@@ -748,8 +929,11 @@ async function scrollNykaaFashionPage(page, domain, onUpdate) {
         type: 'info'
       });
       
-      // Scroll down in increments for smoother loading
-      await page.evaluate(`window.scrollTo(0, ${scrollCount * document.body.scrollHeight / maxScrolls})`);
+      // Scroll down in increments for smoother loading - Fixed to use template literals properly
+      await page.evaluate((scrollCount, maxScrolls) => {
+        window.scrollTo(0, scrollCount * document.body.scrollHeight / maxScrolls);
+      }, scrollCount, maxScrolls);
+      
       await page.waitForTimeout(800); // Wait for content to load
       
       // Check if we're at the end of the page

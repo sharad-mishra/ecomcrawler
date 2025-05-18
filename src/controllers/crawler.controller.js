@@ -2,6 +2,7 @@ const crawlerService = require('../services/crawler.service');
 const { getNormalizedDomain } = require('../utils/url.utils');
 const path = require('path');
 const fs = require('fs');
+const config = require('config');
 
 // Update controllers to use Fastify's request/reply pattern
 
@@ -166,7 +167,7 @@ exports.downloadResults = async (request, reply) => {
     }
     
     // Ensure file is from our output directory for security
-    const outputDir = path.resolve(process.cwd(), 'crawled-data');
+    const outputDir = path.resolve(process.cwd(), config.get('outputDir'));
     const filePath = path.resolve(outputDir, path.basename(file));
     
     if (!fs.existsSync(filePath)) {
